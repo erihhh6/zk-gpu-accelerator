@@ -1,0 +1,254 @@
+"""
+src/ntt_gpu.py — Number Theoretic Transform on GPU (CuPy).
+
+Implements the Cooley-Tukey NTT using CuPy's vectorized array operations.
+Each butterfly stage is computed entirely on the GPU using CuPy indexing
+and broadcasting — no Numba or nvvm required, only CuPy + nvrtc (provided
+by PyTorch's bundled nvrtc64*.dll on Windows).
+
+Algorithm (per stage)
+---------------------
+For stage with half = length // 2:
+  1. Precompute twiddle factors wk[j] = w^j mod p  (on CPU, copied to GPU)
+  2. Reshape the flat array to (-1, length)
+  3. upper[:, j] = arr[:, j],  lower[:, j] = arr[:, j + half]
+  4. v[:, j]     = (lower[:, j] * wk[j]) % mod
+  5. arr[:, j]        = (upper + v) % mod
+  6. arr[:, j + half] = (upper - v + mod) % mod
+  7. Flatten back
+
+CuPy broadcasts wk (shape: half,) across groups (shape: n//length, half)
+so step 4 is a single vectorized modular multiply on the GPU.
+"""
+
+from __future__ import annotations
+
+import os
+import math
+import warnings
+
+import numpy as np
+
+
+# ------------------------------------------------------------------
+# PATH setup (same as field_gpu.py — add PyTorch lib for nvrtc)
+# ------------------------------------------------------------------
+
+def _add_torch_lib_to_path() -> None:
+    try:
+        import torch as _torch
+        torch_lib = os.path.join(os.path.dirname(_torch.__file__), "lib")
+        if os.path.isdir(torch_lib) and torch_lib not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
+    except ImportError:
+        pass
+
+_add_torch_lib_to_path()
+
+# ------------------------------------------------------------------
+# GPU availability
+# ------------------------------------------------------------------
+
+try:
+    import warnings as _w
+    with _w.catch_warnings():
+        _w.simplefilter("ignore")
+        import cupy as cp
+
+    _probe = cp.ElementwiseKernel("int64 x", "int64 y", "y = x + 1", "_probe_ntt")
+    _probe(cp.array([0], dtype=cp.int64))
+    _gpu_available: bool = True
+
+except Exception:
+    _gpu_available = False
+    cp = None  # type: ignore[assignment]
+
+
+def _check_gpu() -> None:
+    if not _gpu_available:
+        raise RuntimeError(
+            "GPU not available. Install cupy-cuda12x and ensure CUDA drivers are installed."
+        )
+
+
+# ------------------------------------------------------------------
+# GPU NTT kernels
+# ------------------------------------------------------------------
+
+if _gpu_available:
+    # Modular multiply for mod < 2^31: values < mod so a*b < 2^62, fits in int64
+    # Safe for NTT with mod=998244353 (< 2^30)
+    _modmul_ek = cp.ElementwiseKernel(
+        "int64 a, int64 b, int64 mod",
+        "int64 c",
+        "c = a * b % mod",
+        "ntt_modmul",
+    )
+
+_BLOCK = 256
+
+
+def _modmul_gpu(a: "cp.ndarray", b: "cp.ndarray", mod: int) -> "cp.ndarray":
+    """Element-wise modular multiply on GPU. Safe when mod < 2^31."""
+    return _modmul_ek(a, b, mod)
+
+
+# ------------------------------------------------------------------
+# Bit-reversal permutation (GPU via CuPy indexing)
+# ------------------------------------------------------------------
+
+
+def _bit_reverse_permute_gpu(arr: "cp.ndarray") -> "cp.ndarray":
+    """Return a bit-reversal permuted copy of *arr* on the GPU."""
+    n = len(arr)
+    bits = n.bit_length() - 1
+    # Build reversal index on CPU then transfer once
+    idx = np.arange(n, dtype=np.int32)
+    rev = np.zeros(n, dtype=np.int32)
+    tmp = idx.copy()
+    for _ in range(bits):
+        rev = (rev << 1) | (tmp & 1)
+        tmp >>= 1
+    rev_gpu = cp.array(rev)
+    return arr[rev_gpu]
+
+
+# ------------------------------------------------------------------
+# Public GPU NTT
+# ------------------------------------------------------------------
+
+_PRIMITIVE_ROOT = 3  # primitive root of 998244353
+
+
+def ntt_gpu(
+    a: "cp.ndarray",
+    mod: int,
+    invert: bool = False,
+) -> "cp.ndarray":
+    """
+    Cooley-Tukey NTT on GPU using CuPy vectorized butterfly.
+
+    Parameters
+    ----------
+    a      : cp.ndarray of dtype int64, length a power of 2
+    mod    : NTT-friendly prime (recommended: 998244353)
+    invert : if True, compute the inverse NTT
+
+    Returns
+    -------
+    cp.ndarray int64 of the same length
+    """
+    if not _gpu_available:
+        warnings.warn("GPU not available; falling back to CPU NTT.", stacklevel=2)
+        from src.ntt import ntt as ntt_cpu
+        a_list = a.tolist() if hasattr(a, "tolist") else list(a)
+        result = ntt_cpu(a_list, mod, invert)
+        return np.array(result, dtype=np.int64)  # type: ignore[return-value]
+
+    n = len(a)
+    if n == 0:
+        return a.copy()
+    if n & (n - 1):
+        raise ValueError(f"NTT length must be a power of 2, got {n}")
+    if n == 1:
+        return a.copy()
+
+    arr = _bit_reverse_permute_gpu(cp.array(a, dtype=cp.int64))
+
+    log_n = int(math.log2(n))
+    length = 2
+    for _ in range(log_n):
+        half = length >> 1
+
+        # Primitive root of order *length*
+        w = pow(_PRIMITIVE_ROOT, (mod - 1) // length, mod)
+        if invert:
+            w = pow(w, mod - 2, mod)
+
+        # Twiddle factors [w^0, w^1, ..., w^(half-1)] — computed on CPU, tiny array
+        wk_cpu = np.empty(half, dtype=np.int64)
+        cur = 1
+        for j in range(half):
+            wk_cpu[j] = cur
+            cur = cur * w % mod
+        wk = cp.array(wk_cpu)  # shape (half,)
+
+        # Reshape: (num_groups, length)
+        arr2 = arr.reshape(-1, length)
+        upper = arr2[:, :half].copy()   # (groups, half)
+        lower = arr2[:, half:].copy()   # (groups, half)
+
+        # v[g, j] = lower[g, j] * wk[j]  — broadcast wk across groups
+        wk_broad = cp.broadcast_to(wk[cp.newaxis, :], lower.shape).copy()
+        v = _modmul_gpu(lower, wk_broad, mod)
+
+        arr2[:, :half] = (upper + v) % mod
+        arr2[:, half:] = (upper - v + mod) % mod
+        arr = arr2.reshape(-1)
+
+        length <<= 1
+
+    if invert:
+        n_inv = pow(n, mod - 2, mod)
+        arr = (arr * n_inv) % mod
+
+    return arr
+
+
+def ntt_gpu_cupy(a: "cp.ndarray", mod: int) -> "cp.ndarray":
+    """
+    Approximate NTT demo using cupy.fft (operates over ℂ, not F_p).
+
+    NOT field-correct — provided only as GPU FFT throughput reference.
+    Use ntt_gpu() for correct NTT results.
+    """
+    if not _gpu_available:
+        warnings.warn("GPU not available; falling back to numpy.fft.", stacklevel=2)
+        a_np = np.asarray(a) if not isinstance(a, np.ndarray) else a
+        return np.fft.fft(a_np.astype(np.complex128))  # type: ignore[return-value]
+    return cp.fft.fft(a.astype(cp.complex128))
+
+
+# ------------------------------------------------------------------
+# Smoke test / benchmark
+# ------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import sys as _sys, os as _os
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    import time
+    import statistics
+    from src.ntt import ntt as ntt_cpu, MOD
+
+    print("=== ntt_gpu.py benchmark ===")
+    SIZES = [2**k for k in [16, 18, 20]]
+
+    for N in SIZES:
+        rng = np.random.default_rng(42)
+        a_np = rng.integers(0, MOD, size=N, dtype=np.int64)
+        a_list = a_np.tolist()
+
+        cpu_times = []
+        for _ in range(3):
+            t0 = time.perf_counter()
+            ntt_cpu(a_list, MOD)
+            cpu_times.append(time.perf_counter() - t0)
+        cpu_ms = statistics.median(cpu_times) * 1000
+
+        if _gpu_available:
+            # Warmup
+            _ = ntt_gpu(cp.array(a_np, dtype=cp.int64), MOD)
+
+            gpu_times = []
+            for _ in range(3):
+                arr = cp.array(a_np, dtype=cp.int64)
+                t0 = time.perf_counter()
+                ntt_gpu(arr, MOD)
+                cp.cuda.Stream.null.synchronize()
+                gpu_times.append(time.perf_counter() - t0)
+            gpu_ms = statistics.median(gpu_times) * 1000
+            print(f"N={N:>8}: CPU {cpu_ms:8.1f} ms | GPU {gpu_ms:6.1f} ms | Speedup {cpu_ms/gpu_ms:.1f}x")
+        else:
+            print(f"N={N:>8}: CPU {cpu_ms:8.1f} ms | GPU not available")
+
+    print("\nntt_gpu.py benchmark complete.")

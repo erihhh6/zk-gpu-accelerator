@@ -1,0 +1,122 @@
+{
+  "field": [
+    {
+      "n": 10000,
+      "cpu_ms": 0.039,
+      "gpu_ms": 0.019,
+      "speedup": 2.05,
+      "cpu_throughput_meps": 257.07,
+      "gpu_throughput_meps": 526.32
+    },
+    {
+      "n": 100000,
+      "cpu_ms": 0.226,
+      "gpu_ms": 0.027,
+      "speedup": 8.38,
+      "cpu_throughput_meps": 442.09,
+      "gpu_throughput_meps": 3703.7
+    },
+    {
+      "n": 1000000,
+      "cpu_ms": 3.56,
+      "gpu_ms": 0.079,
+      "speedup": 45.06,
+      "cpu_throughput_meps": 280.91,
+      "gpu_throughput_meps": 12658.23
+    },
+    {
+      "n": 10000000,
+      "cpu_ms": 35.269,
+      "gpu_ms": 0.837,
+      "speedup": 42.14,
+      "cpu_throughput_meps": 283.54,
+      "gpu_throughput_meps": 11947.43
+    }
+  ],
+  "ntt": [
+    {
+      "n": 16384,
+      "cpu_ms": 34.149,
+      "gpu_ms": 5.622,
+      "speedup": 6.07,
+      "cpu_throughput_meps": 0.4798,
+      "gpu_throughput_meps": 2.9143
+    },
+    {
+      "n": 65536,
+      "cpu_ms": 174.822,
+      "gpu_ms": 11.646,
+      "speedup": 15.01,
+      "cpu_throughput_meps": 0.3749,
+      "gpu_throughput_meps": 5.6273
+    },
+    {
+      "n": 262144,
+      "cpu_ms": 733.527,
+      "gpu_ms": 44.619,
+      "speedup": 16.44,
+      "cpu_throughput_meps": 0.3574,
+      "gpu_throughput_meps": 5.8752
+    },
+    {
+      "n": 1048576,
+      "cpu_ms": 3400.858,
+      "gpu_ms": 166.832,
+      "speedup": 20.38,
+      "cpu_throughput_meps": 0.3083,
+      "gpu_throughput_meps": 6.2852
+    }
+  ],
+  "msm": [
+    {
+      "n": 100,
+      "cpu_ms": 367.12,
+      "gpu_ms": 119.235,
+      "gpu_compute_ms": 119.136,
+      "mem_transfer_ms": 0.099,
+      "speedup": 3.08,
+      "cpu_throughput_keps": 0.27,
+      "gpu_throughput_keps": 0.84
+    },
+    {
+      "n": 500,
+      "cpu_ms": 1862.002,
+      "gpu_ms": 247.122,
+      "gpu_compute_ms": 247.024,
+      "mem_transfer_ms": 0.099,
+      "speedup": 7.53,
+      "cpu_throughput_keps": 0.27,
+      "gpu_throughput_keps": 2.02
+    },
+    {
+      "n": 1000,
+      "cpu_ms": 3652.263,
+      "gpu_ms": 414.226,
+      "gpu_compute_ms": 414.122,
+      "mem_transfer_ms": 0.105,
+      "speedup": 8.82,
+      "cpu_throughput_keps": 0.27,
+      "gpu_throughput_keps": 2.41
+    },
+    {
+      "n": 5000,
+      "cpu_ms": 18256.225,
+      "gpu_ms": 1662.432,
+      "gpu_compute_ms": 1662.326,
+      "mem_transfer_ms": 0.11,
+      "speedup": 10.98,
+      "cpu_throughput_keps": 0.27,
+      "gpu_throughput_keps": 3.01
+    },
+    {
+      "n": 10000,
+      "cpu_ms": 36139.602,
+      "gpu_ms": 3093.38,
+      "gpu_compute_ms": 3093.232,
+      "mem_transfer_ms": 0.165,
+      "speedup": 11.68,
+      "cpu_throughput_keps": 0.28,
+      "gpu_throughput_keps": 3.23
+    }
+  ]
+}
