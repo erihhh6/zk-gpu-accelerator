@@ -6,9 +6,12 @@ Usage:
     python benchmarks/plot_results.py --input results/x.json   # charts go next to the input
 
 Produces, each in a light and a "_dark" variant (for GitHub's <picture> switch):
-  latency_comparison.png  time per implementation vs size: field, NTT, MSM
+  latency_comparison.png  time per implementation vs size: 64-bit field,
+                          254-bit field, NTT, MSM
   speedup_curve.png       what the GPU buys over the best CPU code running the
-                          same algorithm (NumPy for field/NTT, CPU-digit Pippenger for MSM)
+                          same algorithm (NumPy for the 64-bit field and NTT,
+                          Python ints for the 254-bit field, CPU-digit
+                          Pippenger for MSM)
 
 Design: colour follows the implementation and never its rank; every series also
 has its own marker shape (a second channel for colour-vision deficiency and for
@@ -65,7 +68,9 @@ THEMES: dict[str, dict[str, Any]] = {
 SERIES = {
     "gpu": ("GPU, data on device", 0, "o"),
     "numpy": ("NumPy (fair CPU baseline)", 1, "s"),
+    "python_ints": ("Python ints (CPU baseline)", 1, "s"),
     "gpu_e2e": ("GPU incl. host-device copies", 2, "^"),
+    "gpu_e2e_ints": ("GPU incl. Python int conversion and copies", 2, "^"),
     "python": ("Pure Python (reference only)", 3, "D"),
     "gpu_cold": ("GPU first call (builds caches)", 4, "v"),
     "pippenger_gpu": ("Pippenger, GPU digit extraction", 0, "o"),
@@ -75,25 +80,30 @@ SERIES = {
 }
 
 PANELS = [
-    ("field", "Field multiplication", "elements"),
+    ("field", "Field multiplication, 64-bit (998244353)", "elements"),
+    ("field256", "Field multiplication, 254-bit (BN254 Fr)", "elements"),
     ("ntt", "NTT (998244353)", "elements"),
     ("msm", "MSM, BN254 G1, 254-bit scalars", "points"),
 ]
+FIGSIZE = (11.5, 8.6)  # 2 x 2 panels
 
 # (benchmark, GPU implementation, CPU implementation of the same algorithm)
 SPEEDUPS = [
     ("field", "gpu", "numpy"),
     ("field", "gpu_e2e", "numpy"),
+    ("field256", "gpu", "python_ints"),
+    ("field256", "gpu_e2e_ints", "python_ints"),
     ("ntt", "gpu", "numpy"),
     ("ntt", "gpu_e2e", "numpy"),
     ("msm", "pippenger_gpu", "pippenger_cpu"),
 ]
 SPEEDUP_TITLES = {
-    "field": "Field multiplication: GPU vs NumPy",
+    "field": "64-bit field multiplication: GPU vs NumPy",
+    "field256": "254-bit field multiplication: GPU vs Python ints",
     "ntt": "NTT (998244353): GPU vs NumPy",
     "msm": "MSM Pippenger: GPU vs CPU digit extraction",
 }
-SPEEDUP_TICKS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000)
+SPEEDUP_TICKS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000)
 
 
 def _size_label(n: int, bench: str) -> str:
@@ -175,6 +185,13 @@ def _footnote(fig: Any, meta: dict[str, Any], theme: dict[str, Any]) -> None:
     )
 
 
+def _no_data(ax: Axes, theme: dict[str, Any], message: str) -> None:
+    style = {"ha": "center", "va": "center", "color": theme["muted"], "fontsize": 9}
+    ax.text(0.5, 0.5, message, transform=ax.transAxes, **style)
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+
 def _coincide(rows: list[dict[str, Any]], a: str, b: str, tolerance: float = 0.05) -> bool:
     """True if implementations a and b are within *tolerance* of each other at every size."""
     pairs = [(row["ms"].get(a), row["ms"].get(b)) for row in rows]
@@ -182,12 +199,16 @@ def _coincide(rows: list[dict[str, Any]], a: str, b: str, tolerance: float = 0.0
 
 
 def plot_latency(results: dict[str, Any], theme: dict[str, Any]) -> Any:
-    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.4))
+    fig, axes = plt.subplots(2, 2, figsize=FIGSIZE)
     fig.patch.set_facecolor(theme["surface"])
     fig.suptitle("Time per call, by implementation", color=theme["ink"], fontsize=13, y=0.99)
-    for ax, (bench, title, unit) in zip(axes, PANELS, strict=True):
+    for ax, (bench, title, unit) in zip(axes.flat, PANELS, strict=True):
         _style_axes(ax, theme)
         rows = results.get(bench, [])
+        if not rows:  # e.g. a results file from before this benchmark existed
+            ax.set_title(title, fontsize=10.5, loc="left", color=theme["ink"])
+            _no_data(ax, theme, "Not measured in this run")
+            continue
         sizes = [row["n"] for row in rows]
         present = {k for row in rows for k in row["ms"]}
         for impl in (s for s in SERIES if s in present):  # fixed order: legends match across panels
@@ -225,12 +246,12 @@ def plot_latency(results: dict[str, Any], theme: dict[str, Any]) -> Any:
 
 
 def plot_speedup(results: dict[str, Any], theme: dict[str, Any]) -> Any:
-    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.4))
+    fig, axes = plt.subplots(2, 2, figsize=FIGSIZE)
     fig.patch.set_facecolor(theme["surface"])
     fig.suptitle(
         "GPU speedup over CPU code running the same algorithm", color=theme["ink"], fontsize=13, y=0.99
     )
-    for ax, (bench, _latency_title, unit) in zip(axes, PANELS, strict=True):
+    for ax, (bench, _latency_title, unit) in zip(axes.flat, PANELS, strict=True):
         _style_axes(ax, theme)
         rows = results.get(bench, [])
         plotted = []
@@ -247,18 +268,7 @@ def plot_speedup(results: dict[str, Any], theme: dict[str, Any]) -> Any:
                 plotted.append(pts)
         ax.set_title(SPEEDUP_TITLES[bench], fontsize=10.5, loc="left", color=theme["ink"])
         if not plotted:
-            ax.text(
-                0.5,
-                0.5,
-                "No GPU timings in this run",
-                transform=ax.transAxes,
-                ha="center",
-                va="center",
-                color=theme["muted"],
-                fontsize=9,
-            )
-            ax.set_xticks([])
-            ax.set_yticks([])
+            _no_data(ax, theme, "No GPU timings in this run")
             continue
         _set_size_ticks(ax, [row["n"] for row in rows], bench)
         ax.set_yscale("log")
@@ -266,6 +276,9 @@ def plot_speedup(results: dict[str, Any], theme: dict[str, Any]) -> Any:
         # Always span at least 0.5x..2x, so a flat ~1x series still gets readable ticks
         lo, hi = min([*ys, 0.5]) / 1.4, max([*ys, 2.0]) * 1.4
         ax.set_ylim(lo, hi)
+        if len(plotted) >= 2:
+            _legend_headroom(ax, len(plotted))
+            hi = ax.get_ylim()[1]
         ax.yaxis.set_major_locator(FixedLocator([t for t in SPEEDUP_TICKS if lo <= t <= hi]))
         ax.yaxis.set_minor_locator(NullLocator())
         ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}x"))

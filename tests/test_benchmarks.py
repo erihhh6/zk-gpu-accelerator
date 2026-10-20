@@ -25,12 +25,13 @@ def quick_results(tmp_path_factory):
 
 def test_quick_run_writes_verified_results(quick_results):
     _, data = quick_results
-    assert set(data) == {"meta", "field", "ntt", "msm"}
+    sections = [name for name, _ in run_all.BENCHMARKS]
+    assert set(data) == {"meta", *sections}
     meta = data["meta"]
     assert meta["quick"] is True
     assert meta["python"] and meta["cpu"] and meta["method"]
     assert (meta["gpu"] is not None) == GPU_AVAILABLE
-    for section in ("field", "ntt", "msm"):
+    for section in sections:
         assert data[section], f"{section} produced no rows"
         for row in data[section]:
             assert row["verified"] is True
