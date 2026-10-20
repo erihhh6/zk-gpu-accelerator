@@ -1,10 +1,10 @@
 """
-src/field_gpu.py — Finite field arithmetic on GPU (CuPy).
+zkgpu/field_gpu.py — Finite field arithmetic on GPU (CuPy).
 
 Provides GPU-accelerated batch operations over a prime field F_p.
 Implemented entirely with CuPy's ElementwiseKernel — no Numba required.
 
-GPU availability is decided once in src.gpu_backend; when it is unavailable
+GPU availability is decided once in zkgpu.gpu_backend; when it is unavailable
 every function here warns with the reason and falls back to NumPy.
 
 Contract
@@ -18,7 +18,7 @@ Contract
   on an RTX 5050 at N = 10^7; addition costs the same at any modulus).
 - Negative exponents in gpu_batch_pow use Fermat's little theorem, so they
   require a prime modulus.
-- BN254's moduli (~2^254) cannot be stored in int64 at all; see src.field for
+- BN254's moduli (~2^254) cannot be stored in int64 at all; see zkgpu.field for
   arbitrary-precision arithmetic.
 """
 
@@ -29,7 +29,7 @@ import operator
 
 import numpy as np
 
-from src.gpu_backend import GPU_AVAILABLE as _gpu_available, cp, warn_cpu_fallback
+from zkgpu.gpu_backend import GPU_AVAILABLE as _gpu_available, cp, warn_cpu_fallback
 
 _INT64_MAX = 2**63 - 1
 
@@ -227,57 +227,3 @@ def gpu_batch_pow(bases: "cp.ndarray", exp: int, mod: int) -> "cp.ndarray":
         base = _gpu_pow_nonnegative(base, mod - 2, mod)
         exp = -exp
     return _gpu_pow_nonnegative(base, exp, mod)
-
-
-# ------------------------------------------------------------------
-# Smoke test / quick benchmark
-# ------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import sys as _sys, os as _os
-    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-    import time
-    import statistics
-
-    # Use NTT-friendly modulus that fits in int64 for benchmarking
-    MOD_BENCH = 998_244_353
-    N = 10_000_000
-    print(f"=== field_gpu.py smoke test ({N:,} elements, mod={MOD_BENCH}) ===")
-
-    rng = np.random.default_rng(42)
-    a_np = rng.integers(1, MOD_BENCH, size=N, dtype=np.int64)
-    b_np = rng.integers(1, MOD_BENCH, size=N, dtype=np.int64)
-
-    # CPU baseline
-    times_cpu = []
-    for _ in range(3):
-        t0 = time.perf_counter()
-        cpu_result = (a_np * b_np) % MOD_BENCH
-        times_cpu.append(time.perf_counter() - t0)
-    cpu_ms = statistics.median(times_cpu) * 1000
-    print(f"CPU (numpy):    {cpu_ms:.1f} ms")
-
-    if _gpu_available:
-        a_cp = cp.array(a_np)
-        b_cp = cp.array(b_np)
-
-        # Warmup
-        _ = gpu_batch_mul(a_cp, b_cp, MOD_BENCH)
-
-        times_gpu = []
-        for _ in range(3):
-            t0 = time.perf_counter()
-            gpu_result = gpu_batch_mul(a_cp, b_cp, MOD_BENCH)
-            cp.cuda.Stream.null.synchronize()
-            times_gpu.append(time.perf_counter() - t0)
-        gpu_ms = statistics.median(times_gpu) * 1000
-        print(f"GPU (cupy):     {gpu_ms:.1f} ms  (median of 3)")
-        print(f"Speedup:        {cpu_ms / gpu_ms:.1f}x")
-
-        # Correctness check
-        assert np.array_equal(cpu_result[:1000], cp.asnumpy(gpu_result[:1000]))
-        print("GPU result matches CPU on first 1000 elements  OK")
-    else:
-        print("GPU not available - skipping GPU benchmark.")
-
-    print("\nfield_gpu.py smoke test complete.")

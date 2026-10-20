@@ -1,5 +1,5 @@
 """
-src/gpu_backend.py — Single source of truth for whether the CUDA backend is usable.
+zkgpu/gpu_backend.py — Single source of truth for whether the CUDA backend is usable.
 
 Every GPU module imports ``cp``, ``GPU_AVAILABLE`` and ``GPU_UNAVAILABLE_REASON``
 from here instead of probing CuPy on its own. Detection runs once, at import,

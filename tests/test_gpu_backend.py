@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from src import field_gpu, gpu_backend
+from zkgpu import field_gpu, gpu_backend
 
 
 def test_reason_is_set_exactly_when_gpu_unavailable():

@@ -18,14 +18,14 @@ import time
 
 import numpy as np
 
-from src.curve import G
-from src.msm import msm_naive
+from zkgpu.curve import G
+from zkgpu.msm import msm_naive
 
 SIZES = [100, 500, 1000, 5000, 10_000]
 RUNS = 3
 
 try:
-    from src.msm_gpu import msm_pippenger_gpu, _gpu_available
+    from zkgpu.msm_gpu import msm_pippenger_gpu, _gpu_available
     if _gpu_available:
         import cupy as cp
 except Exception:

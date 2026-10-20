@@ -1,5 +1,5 @@
 """
-src/field.py — Finite field arithmetic over BN254 scalar field (CPU baseline).
+zkgpu/field.py — Finite field arithmetic over BN254 scalar field (CPU baseline).
 
 BN254 scalar field modulus r (order of the base point G):
   r = 21888242871839275222246405745257275088548364400416034343698204186575808495617
@@ -89,36 +89,3 @@ def batch_add(a: list[int], b: list[int], mod: int) -> list[int]:
     if len(a) != len(b):
         raise ValueError(f"Length mismatch: len(a)={len(a)}, len(b)={len(b)}")
     return [(x + y) % mod for x, y in zip(a, b)]
-
-
-# ------------------------------------------------------------------
-# Smoke test
-# ------------------------------------------------------------------
-
-if __name__ == "__main__":
-    print("=== field.py smoke test ===")
-
-    a = Fp(5)
-    a_inv = a.inv()
-    product = a * a_inv
-    assert product == Fp(1), f"Expected Fp(1), got {product}"
-    print(f"Fp(5) * Fp(5).inv() = {product}  OK")
-
-    # Test __pow__
-    assert Fp(2) ** 10 == Fp(1024)
-    print(f"Fp(2) ** 10 = {Fp(2) ** 10}  OK")
-
-    # Test field wrap-around
-    assert Fp(FIELD_MODULUS) == Fp(0)
-    print(f"Fp(FIELD_MODULUS) == Fp(0)  OK")
-
-    # Test batch_mul and batch_add
-    res_mul = batch_mul([3, 4, 5], [2, 2, 2], FIELD_MODULUS)
-    assert res_mul == [6, 8, 10]
-    print(f"batch_mul([3,4,5], [2,2,2]) = {res_mul}  OK")
-
-    res_add = batch_add([1, 2, 3], [9, 8, 7], FIELD_MODULUS)
-    assert res_add == [10, 10, 10]
-    print(f"batch_add([1,2,3], [9,8,7]) = {res_add}  OK")
-
-    print("\nAll field.py checks passed.")

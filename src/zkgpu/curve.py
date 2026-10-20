@@ -1,5 +1,5 @@
 """
-src/curve.py — BN254 elliptic curve point arithmetic (CPU).
+zkgpu/curve.py — BN254 elliptic curve point arithmetic (CPU).
 
 Curve equation (short Weierstrass form):
   y² = x³ + 3  mod P
@@ -149,40 +149,3 @@ def scalar_mul(point: Point, scalar: int) -> Point:
 
 # Generator point
 G: Point = Point(GX, GY)
-
-
-# ------------------------------------------------------------------
-# Smoke test
-# ------------------------------------------------------------------
-
-if __name__ == "__main__":
-    print("=== curve.py smoke test ===")
-
-    assert G.is_on_curve(), "Generator G is not on the curve!"
-    print("G is on curve  OK")
-
-    # Identity behaviour
-    assert G + Point.identity() == G
-    assert Point.identity() + G == G
-    print("G + O = G  OK")
-
-    # Inverse: G + (-G) = O
-    neg_G = -G
-    assert G + neg_G == Point.identity()
-    print("G + (-G) = O  OK")
-
-    # Doubling
-    G2 = G.double()
-    assert G2.is_on_curve()
-    print(f"2G = {G2.x} (on curve OK)")
-
-    # Scalar mul: 2*G should equal G.double()
-    assert G * 2 == G2
-    print("G*2 == G.double()  OK")
-
-    # Linearity: (a + b)*G == a*G + b*G
-    a, b = 7, 13
-    assert G * (a + b) == G * a + G * b
-    print(f"(a+b)*G == a*G + b*G  OK")
-
-    print("\nAll curve.py checks passed.")

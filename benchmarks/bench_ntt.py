@@ -17,13 +17,13 @@ import time
 
 import numpy as np
 
-from src.ntt import ntt as ntt_cpu, MOD
+from zkgpu.ntt import ntt as ntt_cpu, MOD
 
 SIZES = [2**k for k in [14, 16, 18, 20]]
 RUNS = 3
 
 try:
-    from src.ntt_gpu import ntt_gpu, _gpu_available
+    from zkgpu.ntt_gpu import ntt_gpu, _gpu_available
     if _gpu_available:
         import cupy as cp
 except Exception:

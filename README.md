@@ -81,8 +81,7 @@ Both are *embarrassingly parallel* → ideal for GPU acceleration.
 ### Prerequisites
 
 - Python 3.11+
-- NVIDIA GPU with CUDA support
-- PyTorch (provides `nvrtc64_*.dll` on Windows, needed for CuPy kernel compilation)
+- For the GPU paths: an NVIDIA GPU, and nvrtc for CuPy's kernel compilation, from either the [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) or a CUDA build of PyTorch (which bundles it)
 
 Check your CUDA version:
 ```bash
@@ -92,27 +91,26 @@ Look for `CUDA Version: XX.Y` in the top-right of the output.
 
 ### Install
 
+The project is a regular Python package (`zkgpu`, configured in `pyproject.toml`). Install it in editable mode, so your edits take effect without reinstalling, together with the optional extras you need:
+
 ```bash
 git clone https://github.com/erihhh6/zk-gpu-accelerator.git
 cd zk-gpu-accelerator
-pip install -r requirements.txt
+pip install -e ".[gpu,bench,dev]"
 ```
 
-> **Important**: `requirements.txt` defaults to `cupy-cuda12x` (CUDA 12.x).
-> If you have CUDA 11.x, replace it with `cupy-cuda11x`.
-> If you have no GPU, comment out the `cupy-cuda12x` line — all GPU functions fall back to CPU automatically.
+| Extra | Installs | Needed for |
+|---|---|---|
+| `gpu` | `cupy-cuda12x` | GPU code paths (CUDA 12.x) |
+| `bench` | `matplotlib` | `benchmarks/plot_results.py` |
+| `dev` | `pytest` | running the tests |
 
-### Windows — make CuPy find nvrtc
+> **CUDA 11.x:** install `cupy-cuda11x` yourself and leave out the `gpu` extra.
+> **No GPU:** leave out the `gpu` extra. Every GPU function falls back to the CPU automatically.
 
-On Windows, CuPy needs `nvrtc64_*.dll` to compile GPU kernels. If you have PyTorch installed, it already bundles this DLL. Add the PyTorch lib directory to your PATH once:
+### Windows: how CuPy finds nvrtc
 
-```powershell
-# Find your Python site-packages path (adjust if needed)
-$torch_lib = "C:\Users\YOUR_NAME\AppData\Local\Programs\Python\Python313\Lib\site-packages\torch\lib"
-[System.Environment]::SetEnvironmentVariable("PATH", "$torch_lib;$env:PATH", "User")
-```
-
-If you don't have PyTorch, install the full [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) which includes nvrtc.
+CuPy needs `nvrtc64_*.dll` to compile GPU kernels. If a CUDA build of PyTorch is installed, `zkgpu` adds its bundled `torch/lib` directory to the DLL search path automatically, without importing torch. Otherwise, install the CUDA Toolkit, which includes nvrtc.
 
 ### Verify the GPU setup
 
@@ -131,7 +129,7 @@ This checks the NVIDIA driver, the CuPy import, CUDA device visibility and kerne
 ### Field Arithmetic
 
 ```python
-from src.field import Fp, batch_mul, FIELD_MODULUS
+from zkgpu.field import Fp, batch_mul, FIELD_MODULUS
 
 a = Fp(12345)
 b = Fp(67890)
@@ -147,7 +145,7 @@ result = batch_mul([1, 2, 3], [4, 5, 6], FIELD_MODULUS)
 
 ```python
 import cupy as cp
-from src.field_gpu import gpu_batch_mul, gpu_batch_add, gpu_batch_pow
+from zkgpu.field_gpu import gpu_batch_mul, gpu_batch_add, gpu_batch_pow
 
 MOD = 998_244_353
 a = cp.array([3, 5, 7], dtype=cp.int64)
@@ -161,7 +159,7 @@ print(gpu_batch_pow(a, 3, MOD))   # [27, 125, 343]
 ### BN254 Curve Operations
 
 ```python
-from src.curve import G, Point
+from zkgpu.curve import G, Point
 
 P = G * 42
 Q = G * 7
@@ -172,7 +170,7 @@ print(R.is_on_curve())   # True
 ### NTT (CPU)
 
 ```python
-from src.ntt import ntt, polynomial_mul, MOD
+from zkgpu.ntt import ntt, polynomial_mul, MOD
 
 a = [1, 2, 3, 4, 5, 6, 7, 8]
 A = ntt(a, MOD)
@@ -186,8 +184,8 @@ print(polynomial_mul([1, 1], [1, 1], MOD))   # [1, 2, 1] = 1 + 2x + x²
 
 ```python
 import cupy as cp
-from src.ntt_gpu import ntt_gpu
-from src.ntt import MOD
+from zkgpu.ntt_gpu import ntt_gpu
+from zkgpu.ntt import MOD
 
 a = cp.array([1, 2, 3, 4, 5, 6, 7, 8], dtype=cp.int64)
 A = ntt_gpu(a, MOD)
@@ -198,8 +196,8 @@ print(recovered.tolist())   # [1, 2, 3, 4, 5, 6, 7, 8]
 ### MSM (CPU)
 
 ```python
-from src.curve import G
-from src.msm import msm_naive, msm_double_and_add
+from zkgpu.curve import G
+from zkgpu.msm import msm_naive, msm_double_and_add
 
 points = [G * i for i in range(1, 11)]
 scalars = list(range(1, 11))
@@ -214,10 +212,10 @@ assert result == result2
 ```python
 import random
 import numpy as np
-from src.curve import G
-from src.field import FIELD_MODULUS
-from src.msm import msm_double_and_add
-from src.msm_gpu import msm_pippenger_gpu
+from zkgpu.curve import G
+from zkgpu.field import FIELD_MODULUS
+from zkgpu.msm import msm_double_and_add
+from zkgpu.msm_gpu import msm_pippenger_gpu
 
 points = [G * i for i in range(1, 101)]
 scalars = [random.randrange(FIELD_MODULUS) for _ in points]   # full 254-bit scalars
@@ -236,7 +234,7 @@ Scalars may be any integers (negative, or larger than r); they are reduced mod r
 
 ```bash
 # All benchmarks + summary table
-python benchmarks/run_all.py
+python -m benchmarks.run_all
 
 # Generate PNG charts from results
 python benchmarks/plot_results.py
@@ -248,7 +246,7 @@ python demo/prover_simulation.py
 ### Run tests
 
 ```bash
-pytest tests/ -v -rxs
+pytest -v -rxs
 ```
 
 - Tests marked `gpu` skip automatically when no usable GPU is found, and the skip message names the reason.
@@ -261,15 +259,16 @@ pytest tests/ -v -rxs
 
 ```
 zk-gpu-accelerator/
-├── src/
-│   ├── gpu_backend.py # One-time CUDA/CuPy detection + reason when unavailable
-│   ├── field.py       # Fp arithmetic CPU — BN254 scalar field
-│   ├── field_gpu.py   # Fp arithmetic GPU — CuPy ElementwiseKernel
-│   ├── curve.py       # BN254 G1 point operations (affine coordinates)
-│   ├── ntt.py         # Cooley-Tukey NTT CPU (MOD = 998244353)
-│   ├── ntt_gpu.py     # NTT GPU — parallel butterfly CuPy kernel
-│   ├── msm.py         # MSM CPU — naive + Straus/Shamir double-and-add
-│   └── msm_gpu.py     # MSM — Pippenger (CPU buckets) + GPU window extraction
+├── pyproject.toml         # package metadata, dependency extras, pytest config
+├── src/zkgpu/             # the importable package: `import zkgpu`
+│   ├── gpu_backend.py     # One-time CUDA/CuPy detection + reason when unavailable
+│   ├── field.py           # Fp arithmetic CPU — BN254 scalar field
+│   ├── field_gpu.py       # Batch modular arithmetic GPU — CuPy ElementwiseKernel
+│   ├── curve.py           # BN254 G1 point operations (affine coordinates)
+│   ├── ntt.py             # Cooley-Tukey NTT CPU (any NTT-friendly prime)
+│   ├── ntt_gpu.py         # NTT GPU — vectorized butterflies, cached twiddles
+│   ├── msm.py             # MSM CPU — naive + Straus/Shamir double-and-add
+│   └── msm_gpu.py         # MSM — Pippenger (CPU buckets) + GPU window extraction
 ├── benchmarks/
 │   ├── bench_field.py
 │   ├── bench_ntt.py
@@ -288,19 +287,20 @@ zk-gpu-accelerator/
 │   └── check_gpu.py   # Layer-by-layer GPU setup diagnostic
 ├── demo/
 │   └── prover_simulation.py
-├── results/           # auto-generated JSON + PNG charts
-└── requirements.txt
+└── results/           # auto-generated JSON + PNG charts
 ```
+
+The `src/` layout means the code is only importable once installed (`pip install -e .`), so tests always exercise the package as users get it rather than whatever happens to be in the working directory.
 
 ---
 
 ## Implementation Notes
 
-- **Field**: BN254 scalar field (r ≈ 2²⁵⁴). All Fp ops use Python's built-in `pow()` for fast modular exponentiation. The GPU field ops (`src/field_gpu.py`) accept any modulus `2 ≤ mod < 2⁶³` and any int64 inputs, which they reduce first. Products use a plain int64 multiply up to `mod ≤ 3,037,000,500`, and an exact 128-bit-wide routine above that, built on `__umul64hi` because NVRTC on Windows has no `__int128`. The GPU benchmark uses `MOD = 998244353`.
-- **NTT**: Cooley-Tukey iterative with bit-reversal permutation. The default modulus is `998244353 = 119·2²³ + 1` (N ≤ 2²³), but any odd prime works up to its 2-adicity, including BN254's scalar field r (2-adicity 28, N ≤ 2²⁸). Roots of unity come from the field's smallest quadratic non-residue, which yields primitive power-of-two roots without factoring p − 1, and every root is checked to be primitive. The GPU version (`src/ntt_gpu.py`) handles primes below 2⁶³: it caches its twiddle table and bit-reversal index on the device for each size, and uses `src/field_gpu.py` for exact modular arithmetic. BN254's r does not fit in int64, so it is CPU-only for now.
+- **Field**: BN254 scalar field (r ≈ 2²⁵⁴). All Fp ops use Python's built-in `pow()` for fast modular exponentiation. The GPU field ops (`zkgpu/field_gpu.py`) accept any modulus `2 ≤ mod < 2⁶³` and any int64 inputs, which they reduce first. Products use a plain int64 multiply up to `mod ≤ 3,037,000,500`, and an exact 128-bit-wide routine above that, built on `__umul64hi` because NVRTC on Windows has no `__int128`. The GPU benchmark uses `MOD = 998244353`.
+- **NTT**: Cooley-Tukey iterative with bit-reversal permutation. The default modulus is `998244353 = 119·2²³ + 1` (N ≤ 2²³), but any odd prime works up to its 2-adicity, including BN254's scalar field r (2-adicity 28, N ≤ 2²⁸). Roots of unity come from the field's smallest quadratic non-residue, which yields primitive power-of-two roots without factoring p − 1, and every root is checked to be primitive. The GPU version (`zkgpu/ntt_gpu.py`) handles primes below 2⁶³: it caches its twiddle table and bit-reversal index on the device for each size, and uses `zkgpu/field_gpu.py` for exact modular arithmetic. BN254's r does not fit in int64, so it is CPU-only for now.
 - **MSM**: Naive and Straus/Shamir simultaneous double-and-add on CPU (one shared accumulator: ~254 doublings in total instead of N·254, about 3× faster than naive for 254-bit scalars); Pippenger bucket method: scalars are reduced mod r and split into four 64-bit limbs, one GPU kernel extracts every window digit at once (a single device-to-host copy), and bucket accumulation plus Horner's-rule window combination (~254 doublings) stay on the CPU. All BN254 point arithmetic uses Python's arbitrary-precision integers (254-bit coordinates).
 - **GPU kernels**: Written with CuPy's `ElementwiseKernel` (CUDA C++ compiled at runtime via nvrtc). Works without the full CUDA Toolkit — only nvrtc is needed (bundled with PyTorch on Windows).
-- **Fallback**: GPU availability is decided once, at import, in `src/gpu_backend.py`. When it is unavailable, every GPU function falls back to NumPy/CPU and emits a `GpuFallbackWarning` naming the reason, so no code changes are needed on CPU-only machines.
+- **Fallback**: GPU availability is decided once, at import, in `zkgpu/gpu_backend.py`. When it is unavailable, every GPU function falls back to NumPy/CPU and emits a `GpuFallbackWarning` naming the reason, so no code changes are needed on CPU-only machines.
 - **Benchmarking**: Median of 3 runs; first GPU run discarded (CuPy JIT warmup).
 
 ---

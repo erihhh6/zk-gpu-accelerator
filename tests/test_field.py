@@ -1,7 +1,7 @@
-"""tests/test_field.py — Correctness tests for src/field.py"""
+"""tests/test_field.py — Correctness tests for zkgpu/field.py"""
 
 import pytest
-from src.field import Fp, FIELD_MODULUS, batch_mul, batch_add
+from zkgpu.field import Fp, FIELD_MODULUS, batch_mul, batch_add
 from tests.known_bugs import known_bug
 
 

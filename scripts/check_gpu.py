@@ -1,15 +1,15 @@
 """
 scripts/check_gpu.py — Diagnose whether this machine can run the GPU code paths.
 
-Usage:
+Usage (after installing the package, e.g. pip install -e ".[gpu,dev]"):
     python scripts/check_gpu.py
 
-Every GPU function in src/ falls back to a CPU implementation when CUDA is
+Every GPU function in zkgpu falls back to a CPU implementation when CUDA is
 unusable (emitting a GpuFallbackWarning), so this script reports each layer
 of the stack explicitly. The first [FAIL] line is the one to fix:
 
   1. NVIDIA driver   — nvidia-smi can see a GPU
-  2. CUDA backend    — src.gpu_backend: CuPy imports, a device is visible,
+  2. CUDA backend    — zkgpu.gpu_backend: CuPy imports, a device is visible,
                        and nvrtc can JIT-compile and run a probe kernel
   3. PyTorch         — informational only; optional, but on Windows its
                        bundled nvrtc DLL stands in for a full CUDA Toolkit
@@ -20,14 +20,10 @@ Exit code is 0 when the project's GPU backend is usable, 1 otherwise.
 from __future__ import annotations
 
 import importlib.util
-import os
 import platform
 import subprocess
 import sys
 from dataclasses import dataclass
-
-# Allow running from the repo root without installing the package
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 OK, FAIL, INFO = "OK", "FAIL", "INFO"
 
@@ -62,7 +58,7 @@ def check_driver() -> Check:
 
 
 def check_backend() -> list[Check]:
-    from src import gpu_backend
+    from zkgpu import gpu_backend
 
     if not gpu_backend.GPU_AVAILABLE:
         return [Check(FAIL, "CUDA backend", str(gpu_backend.GPU_UNAVAILABLE_REASON))]
@@ -116,6 +112,10 @@ def _print_hints(checks: list[Check]) -> None:
 def main() -> int:
     print(f"Python {platform.python_version()} on {platform.platform()}\n")
 
+    if importlib.util.find_spec("zkgpu") is None:
+        print('The zkgpu package is not installed. From the repo root run:\n    pip install -e ".[gpu,dev]"')
+        return 1
+
     # The backend check runs before PyTorch is imported so the result reflects
     # what the project itself sees: torch loads its own CUDA DLLs into the
     # process, which can hide a DLL that CuPy alone would fail to find.
@@ -125,7 +125,7 @@ def main() -> int:
         print(f"[{check.status:^4}] {check.name:<15} {check.detail}")
     _print_hints(checks)
 
-    from src import gpu_backend
+    from zkgpu import gpu_backend
 
     if gpu_backend.GPU_AVAILABLE:
         print("\nGPU code paths are enabled.")

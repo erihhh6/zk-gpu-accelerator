@@ -1,0 +1,49 @@
+# Package metadata and tool configuration (PEP 621).
+# Development install from the repo root:
+#   pip install -e ".[gpu,bench,dev]"     (leave out "gpu" on machines without CUDA)
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zk-gpu-accelerator"
+dynamic = ["version"]
+description = "GPU-accelerated NTT and MSM primitives for zero-knowledge proofs over BN254 (CuPy)"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "erihhh6" }]
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security :: Cryptography",
+]
+
+[project.optional-dependencies]
+# CuPy wheels for CUDA 12.x. On CUDA 11.x, install cupy-cuda11x yourself and skip this extra.
+gpu = ["cupy-cuda12x>=13.0"]
+# Plotting for benchmarks/plot_results.py
+bench = ["matplotlib>=3.8"]
+dev = ["pytest>=8.0"]
+
+[project.urls]
+Repository = "https://github.com/erihhh6/zk-gpu-accelerator"
+
+[tool.setuptools.dynamic]
+version = { attr = "zkgpu.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Unknown markers are errors, so a typo cannot silently bypass the GPU auto-skip
+addopts = "--strict-markers"
+markers = [
+    "gpu: needs a working CUDA GPU; skipped automatically (with the reason) otherwise",
+]

@@ -25,20 +25,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          cache-dependency-path: pyproject.toml
 
-      - name: Install CPU-only dependencies
+      - name: Install package (no "gpu" extra; CI runners have no CUDA)
         run: |
           python -m pip install --upgrade pip
-          # Install everything except cupy (no GPU on CI runners)
-          grep -v "^cupy" requirements.txt | pip install -r /dev/stdin
+          pip install -e ".[dev]"
+
+      - name: Check the installed package imports
+        run: |
+          python -c "import zkgpu; print('zkgpu', zkgpu.__version__)"
 
       - name: Run tests (CPU-only, GPU tests auto-skip)
         run: |
-          python -m pytest tests/ -v --tb=short -rxs
-
-      - name: Smoke-test each src module
-        run: |
-          python -m src.field
-          python -m src.curve
-          python -m src.ntt
-          python -m src.msm
+          python -m pytest -v --tb=short -rxs

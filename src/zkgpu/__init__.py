@@ -11,12 +11,17 @@ ntt         : Number Theoretic Transform — Cooley-Tukey CPU implementation
 ntt_gpu     : NTT on GPU via vectorized CuPy butterflies
 msm         : Multi-Scalar Multiplication on CPU (naive + Straus/Shamir)
 msm_gpu     : Pippenger MSM with GPU scalar-window extraction (point math on CPU)
+
+GPU modules are not imported here: importing them probes CUDA, which should
+only happen for callers that actually want the GPU paths.
 """
 
-from src.field import Fp, FIELD_MODULUS, batch_mul, batch_add
-from src.curve import Point, G, P, scalar_mul
-from src.ntt import ntt, polynomial_mul, MOD as NTT_MOD
-from src.msm import msm_naive, msm_double_and_add
+__version__ = "0.1.0"  # single source of truth; pyproject.toml reads it
+
+from zkgpu.field import Fp, FIELD_MODULUS, batch_mul, batch_add
+from zkgpu.curve import Point, G, P, scalar_mul
+from zkgpu.ntt import ntt, polynomial_mul, MOD as NTT_MOD
+from zkgpu.msm import msm_naive, msm_double_and_add
 
 __all__ = [
     # field

@@ -1,5 +1,5 @@
 """
-src/ntt.py — Number Theoretic Transform (CPU, Cooley-Tukey iterative).
+zkgpu/ntt.py — Number Theoretic Transform (CPU, Cooley-Tukey iterative).
 
 Theory
 ------
@@ -22,7 +22,7 @@ p - 1 (its "2-adicity"). The default MOD = 998 244 353 = 119 · 2^23 + 1 (a.k.a.
 
 BN254's scalar field r is NTT-friendly too: r - 1 is divisible by 2^28, so it
 supports N ≤ 2^28, which is why Groth16/PLONK over BN254 use it. This module
-works over r directly (Python ints); src.ntt_gpu cannot, because its elements
+works over r directly (Python ints); zkgpu.ntt_gpu cannot, because its elements
 are int64.
 
 Applications in ZK
@@ -234,44 +234,3 @@ def polynomial_mul(p1: list[int], p2: list[int], mod: int = MOD) -> list[int]:
     while len(result) > 1 and result[-1] == 0:
         result.pop()
     return result
-
-
-# ------------------------------------------------------------------
-# Smoke test
-# ------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import random
-
-    print("=== ntt.py smoke test ===")
-
-    # Verify INTT(NTT(a)) == a for a random vector
-    random.seed(42)
-    N = 1024
-    a = [random.randint(0, MOD - 1) for _ in range(N)]
-    transformed = ntt(a, MOD)
-    recovered = ntt(transformed, MOD, invert=True)
-    assert a == recovered, "INTT(NTT(a)) != a"
-    print(f"INTT(NTT(a)) == a for N={N}  OK")
-
-    # Polynomial multiplication: (1 + x)(1 + x) = 1 + 2x + x^2
-    p1 = [1, 1]
-    p2 = [1, 1]
-    prod = polynomial_mul(p1, p2, MOD)
-    assert prod == [1, 2, 1], f"Expected [1, 2, 1], got {prod}"
-    print(f"(1+x)*(1+x) = {prod}  OK")
-
-    # Verify poly mul matches naive convolution
-    def naive_poly_mul(p: list[int], q: list[int], m: int) -> list[int]:
-        result = [0] * (len(p) + len(q) - 1)
-        for i, a in enumerate(p):
-            for j, b in enumerate(q):
-                result[i + j] = (result[i + j] + a * b) % m
-        return result
-
-    p3 = [random.randint(0, MOD - 1) for _ in range(16)]
-    p4 = [random.randint(0, MOD - 1) for _ in range(16)]
-    assert polynomial_mul(p3, p4, MOD) == naive_poly_mul(p3, p4, MOD)
-    print("NTT poly_mul == naive poly_mul (degree-15 polynomials)  OK")
-
-    print("\nAll ntt.py checks passed.")

@@ -1,8 +1,8 @@
 """
 benchmarks/run_all.py — Run all benchmarks sequentially and save a combined JSON.
 
-Usage:
-    python benchmarks/run_all.py
+Usage (from the repo root, with the package installed):
+    python -m benchmarks.run_all
 
 Output:
     results/all_results.json  — combined benchmark data
@@ -13,11 +13,7 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import time
-
-# Ensure project root is on the path when invoked from repo root
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from benchmarks.bench_field import run_bench as bench_field
 from benchmarks.bench_ntt import run_bench as bench_ntt

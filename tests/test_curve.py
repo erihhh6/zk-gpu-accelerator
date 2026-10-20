@@ -5,8 +5,8 @@ import random
 
 import pytest
 
-from src.curve import G, P, Point, scalar_mul
-from src.field import FIELD_MODULUS as R  # BN254 G1 is a cyclic group of prime order r
+from zkgpu.curve import G, P, Point, scalar_mul
+from zkgpu.field import FIELD_MODULUS as R  # BN254 G1 is a cyclic group of prime order r
 from tests.known_bugs import known_bug
 
 O = Point.identity()

@@ -1,17 +1,17 @@
-"""tests/test_msm.py — Correctness tests for src/msm.py (and GPU if available)."""
+"""tests/test_msm.py — Correctness tests for zkgpu/msm.py (and GPU if available)."""
 
 import random
 
 import numpy as np
 import pytest
 
-from src import msm_gpu as msm_gpu_module
-from src.curve import G, P as CURVE_P, Point
-from src.field import FIELD_MODULUS as R
-from src.msm import msm_naive, msm_double_and_add
-from src.msm_gpu import msm_pippenger_gpu
+from zkgpu import msm_gpu as msm_gpu_module
+from zkgpu.curve import G, P as CURVE_P, Point
+from zkgpu.field import FIELD_MODULUS as R
+from zkgpu.msm import msm_naive, msm_double_and_add
+from zkgpu.msm_gpu import msm_pippenger_gpu
 
-pytestmark = pytest.mark.filterwarnings("ignore::src.gpu_backend.GpuFallbackWarning")
+pytestmark = pytest.mark.filterwarnings("ignore::zkgpu.gpu_backend.GpuFallbackWarning")
 
 GPU = pytest.param("gpu", marks=pytest.mark.gpu)
 FALLBACK = "fallback"

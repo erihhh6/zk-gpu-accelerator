@@ -1,9 +1,9 @@
 """
-src/ntt_gpu.py — Number Theoretic Transform on GPU (CuPy).
+zkgpu/ntt_gpu.py — Number Theoretic Transform on GPU (CuPy).
 
 Implements the Cooley-Tukey NTT using CuPy's vectorized array operations.
 Each butterfly stage runs on the GPU using CuPy indexing and broadcasting;
-only CuPy and nvrtc are needed (src.gpu_backend explains how nvrtc is found).
+only CuPy and nvrtc are needed (zkgpu.gpu_backend explains how nvrtc is found).
 
 Algorithm (per stage)
 ---------------------
@@ -18,14 +18,14 @@ The twiddle table and the bit-reversal index depend only on (n, mod, invert),
 so they are built once on the device and cached: repeated transforms of the
 same size, the normal pattern in a prover, reuse them.
 
-Modular products and sums go through src.field_gpu, which is exact for any
-modulus below 2^63. Roots come from src.ntt.get_ntt_root, so the GPU and CPU
+Modular products and sums go through zkgpu.field_gpu, which is exact for any
+modulus below 2^63. Roots come from zkgpu.ntt.get_ntt_root, so the GPU and CPU
 transforms use identical roots and agree element for element.
 
 Limitations
 -----------
 - Elements are int64, so mod must be an odd prime below 2^63 with n | mod - 1.
-  BN254's r (~2^254) does not fit; use src.ntt.ntt for it.
+  BN254's r (~2^254) does not fit; use zkgpu.ntt.ntt for it.
 """
 
 from __future__ import annotations
@@ -34,9 +34,9 @@ import functools
 
 import numpy as np
 
-from src.field_gpu import gpu_batch_add, gpu_batch_mul
-from src.gpu_backend import GPU_AVAILABLE as _gpu_available, cp, warn_cpu_fallback
-from src.ntt import get_ntt_root, ntt as ntt_cpu
+from zkgpu.field_gpu import gpu_batch_add, gpu_batch_mul
+from zkgpu.gpu_backend import GPU_AVAILABLE as _gpu_available, cp, warn_cpu_fallback
+from zkgpu.ntt import get_ntt_root, ntt as ntt_cpu
 
 _INT64_MAX = 2**63 - 1
 
@@ -105,12 +105,12 @@ def ntt_gpu(
 
     Raises
     ------
-    ValueError : mod >= 2^63, or the same length/modulus errors as src.ntt.ntt
+    ValueError : mod >= 2^63, or the same length/modulus errors as zkgpu.ntt.ntt
     """
     if mod > _INT64_MAX:
         raise ValueError(
             f"ntt_gpu works on int64 elements, so mod must be below 2^63, got {mod}; "
-            "use src.ntt.ntt for larger moduli such as BN254's r"
+            "use zkgpu.ntt.ntt for larger moduli such as BN254's r"
         )
     if not _gpu_available:
         warn_cpu_fallback("ntt_gpu", "the CPU NTT")
@@ -153,48 +153,3 @@ def ntt_gpu(
         arr = gpu_batch_mul(arr, n_inv, mod)
 
     return arr
-
-
-# ------------------------------------------------------------------
-# Smoke test / benchmark
-# ------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import sys as _sys, os as _os
-    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-    import time
-    import statistics
-    from src.ntt import MOD
-
-    print("=== ntt_gpu.py benchmark ===")
-    SIZES = [2**k for k in [16, 18, 20]]
-
-    for N in SIZES:
-        rng = np.random.default_rng(42)
-        a_np = rng.integers(0, MOD, size=N, dtype=np.int64)
-        a_list = a_np.tolist()
-
-        cpu_times = []
-        for _ in range(3):
-            t0 = time.perf_counter()
-            ntt_cpu(a_list, MOD)
-            cpu_times.append(time.perf_counter() - t0)
-        cpu_ms = statistics.median(cpu_times) * 1000
-
-        if _gpu_available:
-            # Warmup
-            _ = ntt_gpu(cp.array(a_np, dtype=cp.int64), MOD)
-
-            gpu_times = []
-            for _ in range(3):
-                arr = cp.array(a_np, dtype=cp.int64)
-                t0 = time.perf_counter()
-                ntt_gpu(arr, MOD)
-                cp.cuda.Stream.null.synchronize()
-                gpu_times.append(time.perf_counter() - t0)
-            gpu_ms = statistics.median(gpu_times) * 1000
-            print(f"N={N:>8}: CPU {cpu_ms:8.1f} ms | GPU {gpu_ms:6.1f} ms | Speedup {cpu_ms/gpu_ms:.1f}x")
-        else:
-            print(f"N={N:>8}: CPU {cpu_ms:8.1f} ms | GPU not available")
-
-    print("\nntt_gpu.py benchmark complete.")

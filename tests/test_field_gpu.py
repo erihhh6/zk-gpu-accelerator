@@ -1,5 +1,5 @@
 """
-tests/test_field_gpu.py — src/field_gpu.py on CUDA and through its CPU fallback.
+tests/test_field_gpu.py — zkgpu/field_gpu.py on CUDA and through its CPU fallback.
 
 Every case runs twice: on the GPU (skipped without one) and through the NumPy
 fallback (forced by switching the GPU flag off), so CI exercises the fallback
@@ -11,10 +11,10 @@ import random
 import numpy as np
 import pytest
 
-from src import field_gpu
-from src.gpu_backend import cp
+from zkgpu import field_gpu
+from zkgpu.gpu_backend import cp
 
-pytestmark = pytest.mark.filterwarnings("ignore::src.gpu_backend.GpuFallbackWarning")
+pytestmark = pytest.mark.filterwarnings("ignore::zkgpu.gpu_backend.GpuFallbackWarning")
 
 NTT_MOD = 998_244_353
 INT64_SAFE_LIMIT = 3_037_000_500  # largest modulus that still uses the plain int64 multiply

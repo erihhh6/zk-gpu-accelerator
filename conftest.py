@@ -1,21 +1,12 @@
-"""conftest.py — pytest configuration for zk-gpu-accelerator."""
+"""conftest.py — pytest configuration for zk-gpu-accelerator.
 
-import sys
-import os
+Tests import the installed `zkgpu` package (pip install -e ".[dev]"), so no
+sys.path manipulation is needed; the `gpu` marker is registered in pyproject.toml.
+"""
 
-# Ensure the project root is on sys.path so `from src.xxx import ...` works
-# regardless of where pytest is invoked from.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pytest
 
-import pytest  # noqa: E402
-
-from src.gpu_backend import GPU_AVAILABLE, GPU_UNAVAILABLE_REASON  # noqa: E402
-
-
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers", "gpu: needs a working CUDA GPU; skipped automatically (with the reason) otherwise"
-    )
+from zkgpu.gpu_backend import GPU_AVAILABLE, GPU_UNAVAILABLE_REASON
 
 
 def pytest_collection_modifyitems(config, items):

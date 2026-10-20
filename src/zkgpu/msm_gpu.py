@@ -1,5 +1,5 @@
 """
-src/msm_gpu.py — Pippenger Multi-Scalar Multiplication with GPU digit extraction.
+zkgpu/msm_gpu.py — Pippenger Multi-Scalar Multiplication with GPU digit extraction.
 
 What runs where
 ---------------
@@ -27,9 +27,9 @@ from collections.abc import Iterable
 
 import numpy as np
 
-from src.curve import Point
-from src.field import FIELD_MODULUS as _GROUP_ORDER  # BN254's r: order of G1
-from src.gpu_backend import GPU_AVAILABLE as _gpu_available, cp, warn_cpu_fallback
+from zkgpu.curve import Point
+from zkgpu.field import FIELD_MODULUS as _GROUP_ORDER  # BN254's r: order of G1
+from zkgpu.gpu_backend import GPU_AVAILABLE as _gpu_available, cp, warn_cpu_fallback
 
 # Reduced scalars are < r < 2^254, so 254 bits and four 64-bit limbs suffice
 _SCALAR_BITS = _GROUP_ORDER.bit_length()
@@ -180,52 +180,3 @@ def msm_pippenger_gpu(
             result = result.double()
         result = result + _window_sum(points, digits[win], bucket_count)
     return result
-
-
-# ------------------------------------------------------------------
-# Smoke test / benchmark
-# ------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import sys as _sys, os as _os
-    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
-    import time
-    import statistics
-    from src.curve import G
-    from src.msm import msm_naive
-    import random
-
-    print("=== msm_gpu.py benchmark ===")
-    random.seed(42)
-
-    SIZES = [100, 1000, 5000]
-
-    for N in SIZES:
-        scalars_list = [random.randint(1, 2**32) for _ in range(N)]
-        points_list = [G * random.randint(1, 2**32) for _ in range(N)]
-
-        px_np = np.array([p.x for p in points_list], dtype=object)
-        py_np = np.array([p.y for p in points_list], dtype=object)
-        sc_np = np.array(scalars_list, dtype=np.int64)
-
-        cpu_times = []
-        for _ in range(3):
-            t0 = time.perf_counter()
-            msm_naive(points_list, scalars_list)
-            cpu_times.append(time.perf_counter() - t0)
-        cpu_ms = statistics.median(cpu_times) * 1000
-
-        # Warmup
-        msm_pippenger_gpu(px_np[:10], py_np[:10], sc_np[:10], window_size=4)
-
-        pip_times = []
-        for _ in range(3):
-            t0 = time.perf_counter()
-            msm_pippenger_gpu(px_np, py_np, sc_np, window_size=8)
-            pip_times.append(time.perf_counter() - t0)
-        pip_ms = statistics.median(pip_times) * 1000
-        speedup = cpu_ms / pip_ms if pip_ms > 0 else 0
-
-        print(f"N={N:>6}: CPU {cpu_ms:8.1f} ms | Pippenger+GPU {pip_ms:6.1f} ms | Speedup {speedup:.1f}x")
-
-    print("\nmsm_gpu.py benchmark complete.")

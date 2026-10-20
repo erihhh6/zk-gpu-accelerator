@@ -12,30 +12,25 @@ This script measures (2) and (3) using our implementations and reports:
   - Total estimated prover time
   - CPU vs GPU comparison
 
-Usage:
+Usage (with the package installed):
     python demo/prover_simulation.py
 """
 
 from __future__ import annotations
 
 import random
-import sys
 import time
-import os
-
-# Allow running from repo root
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
-from src.curve import G
-from src.msm import msm_naive
-from src.ntt import ntt as ntt_cpu, MOD as NTT_MOD
+from zkgpu.curve import G
+from zkgpu.msm import msm_naive
+from zkgpu.ntt import ntt as ntt_cpu, MOD as NTT_MOD
 
 try:
     import cupy as cp
-    from src.ntt_gpu import ntt_gpu, _gpu_available as _ntt_gpu_ok
-    from src.msm_gpu import msm_pippenger_gpu, _gpu_available as _msm_gpu_ok
+    from zkgpu.ntt_gpu import ntt_gpu, _gpu_available as _ntt_gpu_ok
+    from zkgpu.msm_gpu import msm_pippenger_gpu, _gpu_available as _msm_gpu_ok
     _gpu_available = _ntt_gpu_ok and _msm_gpu_ok
 except ImportError:
     _gpu_available = False
