@@ -31,12 +31,12 @@ Measured on an NVIDIA GeForce RTX 5050 Laptop GPU against NumPy and Python ints 
 
 This is a tested prototype, not yet a GPU prover for BN254:
 
-- **The GPU NTT uses 64-bit integers**, so it works over primes below 2⁶³; the benchmarks use 998244353. BN254's two 254-bit fields now have GPU multiplication, addition and subtraction (`zkgpu.field256_gpu`), but the NTT and MSM do not use them yet, so BN254's NTT (`Radix2Domain`) still runs on the CPU.
+- **BN254's NTT now runs on the GPU** (`BN254_FR.ntt` in `zkgpu.field256_gpu`, on data kept on the GPU), but it is not benchmarked yet, and `Radix2Domain` still runs on the CPU. The older GPU NTT (`zkgpu.ntt_gpu`, the one benchmarked below) uses 64-bit integers, so it only works over primes below 2⁶³; the benchmarks use 998244353.
 - **The MSM gains are algorithmic.** Pippenger is 7.0x faster than the naive method at 1,000 points, and Jacobian coordinates made every MSM 18–28x faster. The GPU contributes nothing measurable yet.
 - **The baselines are fair, but they are not the fastest CPU code possible.** Each GPU path is compared with the best CPU code this package has for the same job, which is the right comparison for it. Optimised native libraries (C++/Rust, multithreaded) would be considerably faster and would shrink these ratios. That matters most for the 254-bit field, where the baseline is interpreted Python integers, so its 910x overstates the gain over a good CPU library.
 - **The 254-bit kernels only pay off on data that stays on the GPU.** Converting between Python ints and the GPU's format costs more than the multiplication itself (see [below](#field-multiplication-254-bit-bn254-fr)).
 
-The next steps build BN254's NTT and MSM point arithmetic on those 254-bit kernels.
+The next steps benchmark the BN254 NTT and build the MSM's point arithmetic on the same 254-bit kernels.
 
 ---
 
@@ -227,6 +227,17 @@ print(Fr.to_ints(Fr.add(a, Fr.from_ints([1]))))    # [4, 6, 0]: a single row bro
 
 A batch of n elements is an `(n, 4)` uint64 array of 64-bit limbs. Results stay in that form on the GPU, so they can feed further operations without copying, and `to_ints` reads them back. `Field256(modulus)` works the same way for any odd modulus below 2²⁵⁵.
 
+The NTT runs on the same rows, so a whole polynomial multiplication stays on the GPU:
+
+```python
+# (1 + 2X)(3 + X) = 3 + 7X + 2X², multiplied in evaluation form
+a = Fr.ntt(Fr.from_ints([1, 2, 0, 0]))
+b = Fr.ntt(Fr.from_ints([3, 1, 0, 0]))
+print(Fr.to_ints(Fr.ntt(Fr.mul(a, b), invert=True)))   # [3, 7, 2, 0]
+```
+
+`Fr.ntt` is the same transform as `Radix2Domain(n).fft`, with the same roots of unity (snarkjs's) and the same output order. `invert=True` gives `ifft`. The field allows sizes up to 2²⁸ for BN254's r, but GPU memory runs out first. A transform of n elements needs about 80·n bytes: the input, the output and the cached twiddle table, at 32 bytes per element. That means about 5.4 GB at 2²⁶.
+
 ### BN254 Curve Operations
 
 ```python
@@ -374,7 +385,7 @@ zk-gpu-accelerator/
 │   ├── gpu_backend.py     # One-time CUDA/CuPy detection + reason when unavailable
 │   ├── field.py           # Fp arithmetic CPU — BN254 scalar field
 │   ├── field_gpu.py       # Batch modular arithmetic GPU — CuPy ElementwiseKernel
-│   ├── field256_gpu.py    # 254-bit field arithmetic GPU — CUDA Montgomery kernels (BN254)
+│   ├── field256_gpu.py    # 254-bit field arithmetic + NTT GPU — CUDA Montgomery kernels (BN254)
 │   ├── curve.py           # BN254 G1 points (affine) + Jacobian formulas for long chains
 │   ├── ntt.py             # Cooley-Tukey NTT CPU (any NTT-friendly prime)
 │   ├── domain.py          # Radix-2 evaluation domains: FFT, coset FFT, Z_H (BN254 Fr)
@@ -392,7 +403,7 @@ zk-gpu-accelerator/
 │   ├── known_bugs.py        # Strict-xfail marker for documented, unfixed bugs
 │   ├── test_field.py        # Fp arithmetic (CPU)
 │   ├── test_field_gpu.py    # GPU field ops vs Python ints, GPU + fallback paths
-│   ├── test_field256_gpu.py # 254-bit kernels vs Python ints, gnark/arkworks constants
+│   ├── test_field256_gpu.py # 254-bit kernels + NTT vs Python ints, gnark/arkworks constants
 │   ├── test_curve.py        # BN254 group law, py_ecc known answers
 │   ├── test_ntt.py          # NTT across moduli, roots-of-unity known answer, GPU
 │   ├── test_domain.py       # domains: snarkjs/arkworks roots, cosets, Groth16 quotient
@@ -423,6 +434,11 @@ The `src/` layout means the code is only importable once installed (`pip install
   - **The modulus is compiled into the kernel** as constants, giving one CUDA module per field, built on first use.
   - **Memory reads stay coalesced:** one 32-byte row is exactly one memory sector, so a warp reading consecutive rows uses every byte it fetches.
   - **Tests** check gnark's published Montgomery constants for both BN254 fields. Mutation checks confirm that breaking any carry, the constant's sign or the final reduction makes them fail.
+  - **The NTT** is radix-2 Cooley-Tukey with one kernel launch per butterfly stage (log₂ n + 1 launches per transform, against about six per stage for the 64-bit `ntt_gpu`).
+    - **Butterflies:** each thread does one, (u, v) → (u + w·v, u − w·v), reading its twiddle w from a table of ω⁰…ω^(n/2−1) at a stage-dependent stride.
+    - **Bit reversal** is an out-of-place gather, using the `__brevll` intrinsic instead of an index table, so the caller's input is never modified.
+    - **The twiddle table** is built on the GPU by doubling (log₂ n small launches) and cached per size.
+    - **Tests** check it against the CPU NTT and against the domain's elements (the NTT of X lists ω⁰…ω^(n−1)). Mutation checks confirm that skipping the bit reversal, using wrong twiddles, pairing the wrong rows, or getting the inverse's root or 1/n scaling wrong makes them fail.
 - **GPU kernels**: Written with CuPy's `ElementwiseKernel` and, for the 254-bit field, `RawModule` (CUDA C++ compiled at runtime via nvrtc). Works without the full CUDA Toolkit — only nvrtc is needed (bundled with PyTorch on Windows).
 - **Fallback**: GPU availability is decided once, at import, in `zkgpu/gpu_backend.py`. When it is unavailable, every GPU function falls back to NumPy/CPU and emits a `GpuFallbackWarning` naming the reason, so no code changes are needed on CPU-only machines.
 - **Benchmarking**: See [Method](#method). Kernels are compiled before any timing starts, so the timings never include CuPy's JIT compilation.

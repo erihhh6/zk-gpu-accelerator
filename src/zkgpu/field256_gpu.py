@@ -1,11 +1,13 @@
 """
-zkgpu/field256_gpu.py — 256-bit prime-field arithmetic on GPU (CUDA via CuPy RawModule).
+zkgpu/field256_gpu.py — 256-bit prime-field arithmetic and NTT on GPU (CUDA via CuPy RawModule).
 
 BN254's fields (r and p, both ~2^254) do not fit the int64 kernels of
 zkgpu.field_gpu. Here every element is four 64-bit limbs, and multiplication
 is Montgomery multiplication, the standard way GPU provers multiply large
 field elements: it replaces the division in (a * b) mod p by multiplications,
-additions and shifts, which GPUs execute quickly.
+additions and shifts, which GPUs execute quickly. Field256.ntt builds the
+number-theoretic transform on the same kernels, so polynomial arithmetic
+over BN254's r can stay on the GPU from start to finish.
 
 Representation
 --------------
@@ -33,6 +35,7 @@ Contract
 
 from __future__ import annotations
 
+import functools
 import operator
 from collections.abc import Iterable
 from typing import Any
@@ -42,6 +45,7 @@ import numpy as np
 from zkgpu.curve import P as BN254_BASE_MODULUS
 from zkgpu.field import FIELD_MODULUS as BN254_SCALAR_MODULUS
 from zkgpu.gpu_backend import GPU_AVAILABLE as _gpu_available, cp, warn_cpu_fallback
+from zkgpu.ntt import get_ntt_root, ntt as ntt_cpu
 
 LIMBS = 4
 _LIMB_BITS = 64
@@ -181,8 +185,51 @@ extern "C" __global__ void NAME(const u64* a, long long a_step,                 
 ZK_BINARY_KERNEL(zk256_mul, zk_mont_mul)
 ZK_BINARY_KERNEL(zk256_add, zk_add)
 ZK_BINARY_KERNEL(zk256_sub, zk_sub)
+
+// ---- NTT (radix-2 Cooley-Tukey, decimation in time) ----
+
+// out[i] = in[bitreverse(i)] for n = 2^log_n rows, log_n >= 1. Out of place,
+// so the caller's input survives; __brevll reverses all 64 bits, and the
+// shift keeps the low log_n of them.
+extern "C" __global__ void zk256_bit_reverse(const u64* in, u64* out, int log_n, long long n) {
+    long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    long long j = (long long)(__brevll((u64)i) >> (64 - log_n));
+    #pragma unroll
+    for (int k = 0; k < 4; ++k) out[4 * i + k] = in[4 * j + k];
+}
+
+// One butterfly stage in place: thread k pairs rows i0 and i1 = i0 + half
+// (half = 2^log_half) and computes (u, v) -> (u + w v, u - w v). With j the
+// position within its group, w = omega_n^(j * n / (2 half)), read from the
+// table [omega^0, ..., omega^(n/2 - 1)] at j << (log_n - 1 - log_half). The
+// pairs of one stage are disjoint, so no thread reads another's output.
+extern "C" __global__ void zk256_ntt_stage(u64* a, const u64* twiddles, int log_half, int log_n,
+                                           long long n_half) {
+    long long k = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (k >= n_half) return;
+    long long j = k & ((1LL << log_half) - 1);
+    long long i0 = ((k >> log_half) << (log_half + 1)) | j;
+    long long i1 = i0 + (1LL << log_half);
+    const u64* tw = twiddles + 4 * (j << (log_n - 1 - log_half));
+    u64 u[4], v[4], w[4], wv[4], x[4], y[4];
+    #pragma unroll
+    for (int t = 0; t < 4; ++t) {
+        u[t] = a[4 * i0 + t];
+        v[t] = a[4 * i1 + t];
+        w[t] = tw[t];
+    }
+    zk_mont_mul(v, w, wv);
+    zk_add(u, wv, x);
+    zk_sub(u, wv, y);
+    #pragma unroll
+    for (int t = 0; t < 4; ++t) {
+        a[4 * i0 + t] = x[t];
+        a[4 * i1 + t] = y[t];
+    }
+}
 """
-_KERNEL_NAMES = ("zk256_mul", "zk256_add", "zk256_sub")
+_KERNEL_NAMES = ("zk256_mul", "zk256_add", "zk256_sub", "zk256_bit_reverse", "zk256_ntt_stage")
 
 
 def _ints_to_limbs(values: Iterable[int]) -> np.ndarray:
@@ -290,6 +337,50 @@ class Field256:
         return self._launch("zk256_sub", a, b)
 
     # ------------------------------------------------------------------
+    # NTT
+    # ------------------------------------------------------------------
+
+    def ntt(self, x: Any, *, invert: bool = False) -> Any:
+        """
+        Radix-2 NTT of Montgomery-form rows *x*; returns new rows, *x* is unchanged.
+
+        Exactly the transform of zkgpu.ntt.ntt (same roots of unity, same output
+        order), and therefore of Radix2Domain.fft / .ifft for BN254_FR. On the
+        GPU it is one bit-reversal launch plus one launch per butterfly stage,
+        log2(n) + 1 in total; the twiddle table is built on the GPU on the
+        first call for each size and cached.
+
+        Raises
+        ------
+        ValueError : if the row count is not a power of two, the modulus is
+                     not an odd prime, or the row count does not divide modulus - 1
+        """
+        n = _row_count(x, "x")
+        if n == 0:
+            return (cp if _gpu_available else np).empty((0, LIMBS), dtype=np.uint64)
+        if n & (n - 1):
+            raise ValueError(f"NTT length must be a power of 2, got {n}")
+        p = self.modulus
+        get_ntt_root(n, p)  # validates modulus and size before any work, as ntt() does
+        if not _gpu_available:
+            warn_cpu_fallback("Field256.ntt", "zkgpu.ntt.ntt on Python integers")
+            values = ntt_cpu([v * self._r_inv % p for v in _limbs_to_ints(_to_host(x))], p, invert)
+            return _ints_to_limbs(v * 2**_R_BITS % p for v in values)
+
+        src = cp.ascontiguousarray(x)
+        if n == 1:  # the transform of a single value is itself (and n^-1 = 1)
+            return src.copy()
+        log_n = n.bit_length() - 1
+        twiddles, n_inv = _ntt_tables(self, n, invert)
+        kernels = self._compile()
+        out = cp.empty_like(src)
+        _run(kernels["zk256_bit_reverse"], n, src, out, np.int32(log_n), np.int64(n))
+        stage, half = kernels["zk256_ntt_stage"], n // 2  # one thread per butterfly
+        for log_half in range(log_n):
+            _run(stage, half, out, twiddles, np.int32(log_half), np.int32(log_n), np.int64(half))
+        return self.mul(out, n_inv) if invert else out
+
+    # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
 
@@ -311,9 +402,8 @@ class Field256:
         a, b = cp.ascontiguousarray(a), cp.ascontiguousarray(b)
         out = cp.empty((n, LIMBS), dtype=cp.uint64)
         if n:
-            blocks = (n + _THREADS_PER_BLOCK - 1) // _THREADS_PER_BLOCK
             step_a, step_b = (np.int64(LIMBS if x.shape[0] > 1 else 0) for x in (a, b))
-            self._compile()[name]((blocks,), (_THREADS_PER_BLOCK,), (a, step_a, b, step_b, out, np.int64(n)))
+            _run(self._compile()[name], n, a, step_a, b, step_b, out, np.int64(n))
         return out
 
     def _fallback(self, op: str, a: Any, b: Any, combine: Any) -> np.ndarray:
@@ -326,6 +416,30 @@ class Field256:
 
 def _to_host(x: Any) -> np.ndarray:
     return cp.asnumpy(x) if hasattr(x, "get") else np.asarray(x)
+
+
+def _run(kernel: Any, threads: int, *args: Any) -> None:
+    """Launch *kernel* with *threads* threads (rounded up to whole blocks; kernels skip the extras)."""
+    kernel(((threads + _THREADS_PER_BLOCK - 1) // _THREADS_PER_BLOCK,), (_THREADS_PER_BLOCK,), args)
+
+
+@functools.lru_cache(maxsize=16)
+def _ntt_tables(field: Field256, n: int, invert: bool) -> tuple[Any, Any]:
+    """
+    Device rows [w^0, ..., w^(n/2 - 1)] for w = omega_n (or omega_n^-1), and n^-1.
+
+    Built by doubling: if the table holds w^0 .. w^(s-1), multiplying it by
+    w^s gives w^s .. w^(2s-1), so log2(n) - 1 small launches replace n/2
+    sequential Python multiplications.
+    """
+    p = field.modulus
+    omega = get_ntt_root(n, p)
+    if invert:
+        omega = pow(omega, -1, p)
+    table = field.from_ints([1])
+    while table.shape[0] < n // 2:
+        table = cp.concatenate([table, field.mul(table, field.from_ints([pow(omega, table.shape[0], p)]))])
+    return table, field.from_ints([pow(n, -1, p)])
 
 
 BN254_FR = Field256(BN254_SCALAR_MODULUS)  # scalar field r: NTT and polynomial arithmetic

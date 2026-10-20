@@ -1,5 +1,5 @@
 """
-tests/test_field256_gpu.py — zkgpu/field256_gpu.py on CUDA and through its CPU fallback.
+tests/test_field256_gpu.py — zkgpu/field256_gpu.py (arithmetic and NTT) on CUDA and through its CPU fallback.
 
 Like test_field_gpu.py, every arithmetic case runs on the GPU (skipped
 without one) and through the Python-integer fallback, so CI checks the limb
@@ -13,9 +13,11 @@ import pytest
 
 from zkgpu import field256_gpu
 from zkgpu.curve import P
+from zkgpu.domain import Radix2Domain
 from zkgpu.field import FIELD_MODULUS as R_SCALAR
 from zkgpu.field256_gpu import BN254_FQ, BN254_FR, Field256
 from zkgpu.gpu_backend import GpuFallbackWarning
+from zkgpu.ntt import ntt
 
 pytestmark = pytest.mark.filterwarnings("ignore::zkgpu.gpu_backend.GpuFallbackWarning")
 
@@ -156,6 +158,79 @@ def test_operations_compose(backend):
     lhs = F.to_ints(F.mul(F.add(A, B), F.sub(A, B)))
     rhs = F.to_ints(F.sub(F.mul(A, A), F.mul(B, B)))
     assert lhs == rhs == [(x * x - y * y) % p for x, y in zip(a, b, strict=True)]
+
+
+# ------------------------------------------------------------------
+# NTT
+# ------------------------------------------------------------------
+
+NTT_SIZES = [1, 2, 4, 8, 64, 1024, 4096]
+
+
+@pytest.mark.parametrize("backend", BACKENDS, indirect=True)
+@pytest.mark.parametrize("n", NTT_SIZES)
+def test_ntt_matches_cpu_ntt(backend, n):
+    rng = random.Random(n)  # one generator: a fresh one per element would repeat a single value
+    a = [rng.randrange(R_SCALAR) for _ in range(n)]
+    assert len(set(a)) == n  # a constant vector would hide ordering and twiddle bugs
+    rows = BN254_FR.from_ints(a)
+    assert BN254_FR.to_ints(BN254_FR.ntt(rows)) == ntt(a, R_SCALAR)
+    assert BN254_FR.to_ints(BN254_FR.ntt(rows, invert=True)) == ntt(a, R_SCALAR, invert=True)
+
+
+@pytest.mark.parametrize("backend", BACKENDS, indirect=True)
+@pytest.mark.parametrize("n", [8, 256])
+def test_ntt_of_x_lists_the_domain(backend, n):
+    """
+    The NTT of f(X) = X is [w^0, w^1, ..., w^(n-1)], the domain's elements.
+    A wrong root, ordering or twiddle passes a round-trip test but fails this.
+    """
+    x = [0, 1] + [0] * (n - 2)
+    assert BN254_FR.to_ints(BN254_FR.ntt(BN254_FR.from_ints(x))) == Radix2Domain(n).elements()
+
+
+@pytest.mark.parametrize("backend", BACKENDS, indirect=True)
+def test_ntt_round_trip_leaves_input_unchanged(backend):
+    rng = random.Random(9)
+    a = [rng.randrange(R_SCALAR) for _ in range(512)]
+    rows = BN254_FR.from_ints(a)
+    before = rows.tolist()
+    assert BN254_FR.to_ints(BN254_FR.ntt(BN254_FR.ntt(rows), invert=True)) == a
+    assert rows.tolist() == before
+
+
+@pytest.mark.parametrize("backend", BACKENDS, indirect=True)
+def test_ntt_multiplies_polynomials(backend):
+    """Cyclic convolution on the GPU end to end: ifft(fft(a) * fft(b)) == a * b mod (X^n - 1)."""
+    F, n = BN254_FR, 64
+    rng = random.Random(5)
+    a, b = [rng.randrange(R_SCALAR) for _ in range(n)], [rng.randrange(R_SCALAR) for _ in range(n)]
+    product = F.ntt(F.mul(F.ntt(F.from_ints(a)), F.ntt(F.from_ints(b))), invert=True)
+    expected = [0] * n
+    for i, x in enumerate(a):
+        for j, y in enumerate(b):
+            expected[(i + j) % n] = (expected[(i + j) % n] + x * y) % R_SCALAR
+    assert F.to_ints(product) == expected
+
+
+@pytest.mark.parametrize("backend", BACKENDS, indirect=True)
+def test_ntt_of_nothing(backend):
+    assert BN254_FR.ntt(BN254_FR.from_ints([])).shape == (0, 4)
+
+
+@pytest.mark.parametrize("backend", BACKENDS, indirect=True)
+@pytest.mark.parametrize(
+    ("field", "n", "message"),
+    [
+        (BN254_FR, 6, "power of 2"),
+        (BN254_FQ, 4, "not divisible"),  # p - 1 = 2 * odd: only sizes 1 and 2 exist
+        (Field256(2**255 - 1), 2, "odd prime"),  # composite: no field, no NTT
+    ],
+    ids=["size-6", "fq-size-4", "composite"],
+)
+def test_ntt_rejects_unsupported_sizes(backend, field, n, message):
+    with pytest.raises(ValueError, match=message):
+        field.ntt(field.from_ints(range(n)))
 
 
 # ------------------------------------------------------------------
