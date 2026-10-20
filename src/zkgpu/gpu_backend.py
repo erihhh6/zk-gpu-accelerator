@@ -109,6 +109,56 @@ cp, GPU_UNAVAILABLE_REASON = _detect()
 GPU_AVAILABLE: bool = GPU_UNAVAILABLE_REASON is None
 
 
+def nvrtc_version() -> tuple[int, int]:  # gpu-only
+    """(major, minor) of the NVRTC that CuPy compiles with."""
+    from cupy_backends.cuda.libs import nvrtc
+
+    major, minor = nvrtc.getVersion()
+    return int(major), int(minor)
+
+
+def driver_compiles_ptx() -> bool:  # gpu-only
+    """Whether compile_module hands PTX to the driver: only a driver at least as new as NVRTC can load it."""
+    major, minor = nvrtc_version()
+    return bool(cp.cuda.runtime.driverGetVersion() >= 1000 * major + 10 * minor)
+
+
+def compile_module(source: str, name: str) -> Any:  # gpu-only
+    """
+    Compile CUDA C++ *source* for the current GPU and load it; get kernels with .get_function(name).
+
+    Why not cupy.RawModule: CuPy has NVRTC emit finished machine code for the
+    device. With NVRTC 12.8 on an sm_120 (Blackwell) GPU, that machine code
+    computed wrong 256-bit Montgomery products in some inlining contexts (see
+    zkgpu.field256_gpu), at every ptxas optimisation level, while the same
+    source compiled to PTX and finished by the driver's compiler (CUDA 13.2)
+    was correct and as fast. So this stops at PTX and lets the driver produce
+    the machine code, as CuPy itself does for GPUs newer than its NVRTC.
+
+    A driver can only load PTX from an NVRTC no newer than itself, so with an
+    older driver this falls back to RawModule; callers self-test what they load.
+
+    Raises RuntimeError with the compiler log if *source* does not compile.
+    """
+    from cupy_backends.cuda.libs import nvrtc  # ships with CuPy; only reached on GPU paths
+
+    if not driver_compiles_ptx():
+        return cp.RawModule(code=source)
+    device_arch = int(cp.cuda.Device().compute_capability)
+    arch = max(a for a in nvrtc.getSupportedArchs() if a <= device_arch)
+    program = nvrtc.createProgram(source, f"{name}.cu", [], [])
+    try:
+        nvrtc.compileProgram(program, [f"-arch=compute_{arch}"])
+        ptx = nvrtc.getPTX(program)
+    except nvrtc.NVRTCError as exc:
+        raise RuntimeError(f"CUDA compilation of {name} failed:\n{nvrtc.getProgramLog(program)}") from exc
+    finally:
+        nvrtc.destroyProgram(program)
+    module = cp.cuda.function.Module()
+    module.load(ptx)  # the driver compiles the PTX into machine code (and caches it on disk)
+    return module
+
+
 def warn_cpu_fallback(func_name: str, fallback: str) -> None:
     """Warn that *func_name* is running *fallback* on the CPU, and say why."""
     warnings.warn(

@@ -11,7 +11,7 @@ import random
 import numpy as np
 import pytest
 
-from zkgpu import field256_gpu
+from zkgpu import field256_gpu, gpu_backend
 from zkgpu.curve import P
 from zkgpu.domain import Radix2Domain
 from zkgpu.field import FIELD_MODULUS as R_SCALAR
@@ -64,6 +64,15 @@ def test_montgomery_constants_match_published_values():
     for field in (BN254_FR, BN254_FQ):
         assert field._n_inv * field.modulus % 2**64 == 2**64 - 1
         assert field._r2 == pow(2, 512, field.modulus)
+
+
+def test_cuda_source_compiles_in_the_modulus_constants():
+    """The kernels get p, -p^-1 mod 2^64 and Montgomery one as #defines (gnark's values for Fr)."""
+    source = BN254_FR.cuda_source()
+    assert "#define ZK_NINV 0xc2e1f593efffffffULL" in source
+    assert "#define ZK_P0 0x43e1f593f0000001ULL" in source  # the lowest limb of r
+    assert "#define ZK_ONE0 0xac96341c4ffffffbULL" in source  # the lowest limb of R mod r
+    assert source.index("#define") < source.index("zk_mont_mul")  # constants come before the code
 
 
 @pytest.mark.parametrize("backend", BACKENDS, indirect=True)
@@ -294,6 +303,53 @@ def test_invalid_moduli_raise(modulus):
 def test_float_modulus_raises():
     with pytest.raises(TypeError):
         Field256(7.0)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("t[j] = borrow ? t[j] : d[j];", "t[j] = t[j];"),  # mul and add skip their final reduction
+        ("u64 mask = 0 - borrow, carry = 0;", "u64 mask = 0, carry = 0;"),  # sub never adds p back
+    ],
+    ids=["no-final-reduction", "sub-no-add-back"],
+)
+def test_miscompiled_kernels_fail_their_self_test(monkeypatch, old, new):
+    """
+    Kernels are checked against Python ints when first compiled, so wrong
+    machine code (from a compiler bug, simulated here by broken source) fails
+    loudly instead of returning wrong field elements later.
+    """
+    assert field256_gpu._KERNEL_BODY.count(old) == 1
+    monkeypatch.setattr(field256_gpu, "_KERNEL_BODY", field256_gpu._KERNEL_BODY.replace(old, new))
+    field = Field256(R_SCALAR)  # a fresh instance compiles the patched source
+    with pytest.raises(RuntimeError, match="failed its self-test"):
+        field.from_ints([1, 2])
+    assert field._kernels is None  # nothing that failed is kept for later calls
+
+
+ALIASED_MUL = r"""
+extern "C" __global__ void aliased(const u64* in, u64* out) {
+    u64 w[4];
+    for (int k = 0; k < 4; ++k) w[k] = in[k];
+    zk_mont_mul(w, w, w);
+    for (int k = 0; k < 4; ++k) out[k] = w[k];
+}
+"""
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("x", [3, 5, 123456789, P - 3], ids=["3", "5", "123456789", "p-3"])
+def test_aliased_square_in_a_minimal_kernel(x):
+    """
+    The exact shape NVRTC 12.8 miscompiled for sm_120 when it emitted the
+    machine code itself (wrong products, e.g. 5 * 5 != 25), which is why
+    compile_module stops at PTX. A regression test for that workaround.
+    """
+    module = gpu_backend.compile_module(BN254_FQ.cuda_source() + ALIASED_MUL, "aliased")
+    out = BN254_FQ.from_ints([0])
+    module.get_function("aliased")((1,), (1,), (BN254_FQ.from_ints([x]), out))
+    assert BN254_FQ.to_ints(out) == [x * x % P]
 
 
 def test_fallback_warns(monkeypatch):

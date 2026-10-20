@@ -44,7 +44,7 @@ import numpy as np
 
 from zkgpu.curve import P as BN254_BASE_MODULUS
 from zkgpu.field import FIELD_MODULUS as BN254_SCALAR_MODULUS
-from zkgpu.gpu_backend import GPU_AVAILABLE as _gpu_available, cp, warn_cpu_fallback
+from zkgpu.gpu_backend import GPU_AVAILABLE as _gpu_available, compile_module, cp, warn_cpu_fallback
 from zkgpu.ntt import get_ntt_root, ntt as ntt_cpu
 
 LIMBS = 4
@@ -128,15 +128,19 @@ __device__ __forceinline__ void zk_mont_mul(const u64 a[4], const u64 b[4], u64 
 }
 
 // Both inputs are below p, so the sum is below 2p < 2^256: the carry out of
-// the top limb is always zero
+// the top limb is always zero. Like every function here, r may alias a or b
+// (e.g. zk_add(x, x, x) doubles x in place): each limb of the inputs is read
+// before the same limb of r is written.
 __device__ __forceinline__ void zk_add(const u64 a[4], const u64 b[4], u64 r[4]) {
     u64 carry = 0;
     #pragma unroll
     for (int j = 0; j < 4; ++j) {
+        u64 bj = b[j];  // read before r[j] is written, in case r is b
         u64 x = a[j] + carry;
         u64 c1 = x < carry;
-        r[j] = x + b[j];
-        carry = c1 | (r[j] < b[j]);
+        u64 s = x + bj;
+        carry = c1 | (s < bj);
+        r[j] = s;
     }
     zk_reduce_once(r);
 }
@@ -267,7 +271,7 @@ class Field256:
     Arithmetic modulo an odd *modulus* below 2^255 on (n, 4) uint64 limb arrays.
 
     The CUDA module is compiled on first use, once per modulus, with the
-    modulus built into the code as constants.
+    modulus built into the code as constants, and self-tested before use.
     """
 
     def __init__(self, modulus: int) -> None:
@@ -302,7 +306,8 @@ class Field256:
             return _ints_to_limbs(v * 2**_R_BITS % self.modulus for v in reduced)
         # Upload the plain values, then a·R^2·R^-1 = aR on the device: one
         # multiplication per element instead of a 512-bit product on the host
-        return self._launch("zk256_mul", cp.asarray(_ints_to_limbs(reduced)), self._constant(self._r2))
+        plain = cp.asarray(_ints_to_limbs(reduced))  # gpu-only
+        return self._launch("zk256_mul", plain, self._constant(self._r2))  # gpu-only
 
     def to_ints(self, x: Any) -> list[int]:
         """The values of Montgomery-form rows *x*, as Python ints in [0, modulus)."""
@@ -311,8 +316,7 @@ class Field256:
             warn_cpu_fallback("Field256.to_ints", "Python integers")
             return [v * self._r_inv % self.modulus for v in _limbs_to_ints(_to_host(x))]
         # aR · 1 · R^-1 = a: a Montgomery multiplication by a plain 1 leaves Montgomery form
-        plain = self._launch("zk256_mul", x, self._constant(1))
-        return _limbs_to_ints(cp.asnumpy(plain))
+        return _limbs_to_ints(cp.asnumpy(self._launch("zk256_mul", x, self._constant(1))))  # gpu-only
 
     # ------------------------------------------------------------------
     # Arithmetic
@@ -322,19 +326,19 @@ class Field256:
         """Element-wise product of Montgomery-form rows (either may be one broadcast row)."""
         if not _gpu_available:
             return self._fallback("mul", a, b, lambda x, y: x * y * self._r_inv)
-        return self._launch("zk256_mul", a, b)
+        return self._launch("zk256_mul", a, b)  # gpu-only
 
     def add(self, a: Any, b: Any) -> Any:
         """Element-wise sum of Montgomery-form rows (either may be one broadcast row)."""
         if not _gpu_available:
             return self._fallback("add", a, b, lambda x, y: x + y)
-        return self._launch("zk256_add", a, b)
+        return self._launch("zk256_add", a, b)  # gpu-only
 
     def sub(self, a: Any, b: Any) -> Any:
         """Element-wise difference a - b of Montgomery-form rows (either may be one broadcast row)."""
         if not _gpu_available:
             return self._fallback("sub", a, b, lambda x, y: x - y)
-        return self._launch("zk256_sub", a, b)
+        return self._launch("zk256_sub", a, b)  # gpu-only
 
     # ------------------------------------------------------------------
     # NTT
@@ -366,7 +370,9 @@ class Field256:
             warn_cpu_fallback("Field256.ntt", "zkgpu.ntt.ntt on Python integers")
             values = ntt_cpu([v * self._r_inv % p for v in _limbs_to_ints(_to_host(x))], p, invert)
             return _ints_to_limbs(v * 2**_R_BITS % p for v in values)
+        return self._ntt_on_gpu(x, n, invert)  # gpu-only
 
+    def _ntt_on_gpu(self, x: Any, n: int, invert: bool) -> Any:  # gpu-only
         src = cp.ascontiguousarray(x)
         if n == 1:  # the transform of a single value is itself (and n^-1 = 1)
             return src.copy()
@@ -384,20 +390,80 @@ class Field256:
     # Internals
     # ------------------------------------------------------------------
 
-    def _constant(self, value: int) -> Any:
+    def _constant(self, value: int) -> Any:  # gpu-only
         """One device row holding *value* as plain limbs (not Montgomery form)."""
         return cp.asarray(_ints_to_limbs([value]))
 
-    def _compile(self) -> dict[str, Any]:
+    def cuda_source(self) -> str:
+        """
+        CUDA C++ for this field: its constants as #defines, then the shared device code.
+
+        For modules that build on the field arithmetic (zkgpu.curve_gpu appends
+        point formulas to BN254_FQ's source). Defines ZK_P0..3 (the modulus),
+        ZK_NINV (-p^-1 mod 2^64) and ZK_ONE0..3 (1 in Montgomery form, R mod p).
+        """
+
+        def limbs(value: int) -> list[int]:
+            return [(value >> (_LIMB_BITS * j)) & (2**_LIMB_BITS - 1) for j in range(LIMBS)]
+
+        defines = "".join(f"#define ZK_P{j} {limb:#x}ULL\n" for j, limb in enumerate(limbs(self.modulus)))
+        one = 2**_R_BITS % self.modulus
+        defines += "".join(f"#define ZK_ONE{j} {limb:#x}ULL\n" for j, limb in enumerate(limbs(one)))
+        defines += f"#define ZK_NINV {self._n_inv:#x}ULL\n"
+        return defines + _KERNEL_BODY
+
+    def compile(self) -> None:  # gpu-only
+        """
+        Compile, load and self-test the kernels now instead of on first use.
+
+        Raises RuntimeError if they fail their self-test (see _self_test).
+        """
+        self._compile()
+
+    def _compile(self) -> dict[str, Any]:  # gpu-only
         if self._kernels is None:
-            limbs = [(self.modulus >> (_LIMB_BITS * j)) & (2**_LIMB_BITS - 1) for j in range(LIMBS)]
-            defines = "".join(f"#define ZK_P{j} {limb:#x}ULL\n" for j, limb in enumerate(limbs))
-            defines += f"#define ZK_NINV {self._n_inv:#x}ULL\n"
-            module = cp.RawModule(code=defines + _KERNEL_BODY)
+            module = compile_module(self.cuda_source(), "zkgpu_field256")
             self._kernels = {name: module.get_function(name) for name in _KERNEL_NAMES}
+            try:
+                self._self_test()
+            except Exception:
+                self._kernels = None  # never keep kernels that failed their self-test
+                raise
         return self._kernels
 
-    def _launch(self, name: str, a: Any, b: Any) -> Any:
+    def _self_test(self) -> None:  # gpu-only
+        """
+        Check the freshly compiled kernels against Python ints, once per process.
+
+        A compiler can produce wrong machine code for correct source (it has, see
+        zkgpu.gpu_backend.compile_module). This makes such a miscompile fail
+        loudly at load time instead of returning wrong field elements later.
+        Carry-heavy operands: zero, one, p - 1, and values with all-ones limbs.
+        """
+        p = self.modulus
+        a = [0, 1, 2, p - 1, p - 2, p // 2, (2**128 - 1) % p, (2**192 - 1) % p]
+        b = [p - 1, p - 1, 3, p - 1, 5, p // 3, (2**64 - 1) % p, 2**254 % p]
+        x, y = self.from_ints(a), self.from_ints(b)
+        checks = {
+            "mul": (self.mul(x, y), [u * v % p for u, v in zip(a, b, strict=True)]),
+            "add": (self.add(x, y), [(u + v) % p for u, v in zip(a, b, strict=True)]),
+            "sub": (self.sub(x, y), [(u - v) % p for u, v in zip(a, b, strict=True)]),
+        }
+        try:
+            get_ntt_root(len(a), p)
+        except ValueError:
+            pass  # no NTT of this size modulo p, so nothing to check
+        else:
+            checks["ntt"] = (self.ntt(x), ntt_cpu(a, p))
+        for op, (rows, expected) in checks.items():
+            if self.to_ints(rows) != expected:
+                raise RuntimeError(
+                    f"{self!r}: the compiled {op} kernel failed its self-test, so the CUDA compiler "
+                    "produced wrong machine code for this GPU. Please report it with the output of "
+                    "`python scripts/check_gpu.py`."
+                )
+
+    def _launch(self, name: str, a: Any, b: Any) -> Any:  # gpu-only
         n = _broadcast_rows(a, b)
         a, b = cp.ascontiguousarray(a), cp.ascontiguousarray(b)
         out = cp.empty((n, LIMBS), dtype=cp.uint64)
@@ -418,13 +484,13 @@ def _to_host(x: Any) -> np.ndarray:
     return cp.asnumpy(x) if hasattr(x, "get") else np.asarray(x)
 
 
-def _run(kernel: Any, threads: int, *args: Any) -> None:
+def _run(kernel: Any, threads: int, *args: Any) -> None:  # gpu-only
     """Launch *kernel* with *threads* threads (rounded up to whole blocks; kernels skip the extras)."""
     kernel(((threads + _THREADS_PER_BLOCK - 1) // _THREADS_PER_BLOCK,), (_THREADS_PER_BLOCK,), args)
 
 
 @functools.lru_cache(maxsize=16)
-def _ntt_tables(field: Field256, n: int, invert: bool) -> tuple[Any, Any]:
+def _ntt_tables(field: Field256, n: int, invert: bool) -> tuple[Any, Any]:  # gpu-only
     """
     Device rows [w^0, ..., w^(n/2 - 1)] for w = omega_n (or omega_n^-1), and n^-1.
 

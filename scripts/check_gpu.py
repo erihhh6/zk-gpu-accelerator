@@ -10,7 +10,8 @@ of the stack explicitly. The first [FAIL] line is the one to fix:
 
   1. NVIDIA driver   — nvidia-smi can see a GPU
   2. CUDA backend    — zkgpu.gpu_backend: CuPy imports, a device is visible,
-                       and nvrtc can JIT-compile and run a probe kernel
+                       and nvrtc can JIT-compile and run a probe kernel; then
+                       the 256-bit field kernels compile and pass their self-test
   3. PyTorch         — informational only; optional, but on Windows its
                        bundled nvrtc DLL stands in for a full CUDA Toolkit
 
@@ -74,7 +75,25 @@ def check_backend() -> list[Check]:
         Check(OK, "CuPy import", f"cupy {cp.__version__}"),
         Check(OK, "CUDA device", device),
         Check(OK, "Kernel compile", "nvrtc compiled and ran the probe kernel"),
+        check_field256(),
     ]
+
+
+def check_field256() -> Check:
+    """Compile and self-test the 256-bit kernels, and say how their machine code was produced."""
+    from zkgpu import gpu_backend
+    from zkgpu.field256_gpu import BN254_FQ, BN254_FR
+
+    major, minor = gpu_backend.nvrtc_version()
+    driver = gpu_backend.cp.cuda.runtime.driverGetVersion()
+    how = "PTX finished by the driver" if gpu_backend.driver_compiles_ptx() else "NVRTC machine code"
+    versions = f"NVRTC {major}.{minor}, driver CUDA {driver // 1000}.{driver % 1000 // 10}"
+    try:
+        for field in (BN254_FR, BN254_FQ):
+            field.compile()
+    except RuntimeError as exc:
+        return Check(FAIL, "256-bit kernels", f"{exc} ({how}; {versions})")
+    return Check(OK, "256-bit kernels", f"compiled ({how}; {versions}) and passed their self-test")
 
 
 def check_torch() -> Check:

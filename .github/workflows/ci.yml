@@ -51,6 +51,10 @@ jobs:
     name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    env:
+      # No GPU here: leave code marked "# gpu-only" out of the coverage measurement
+      # (both the pytest run and the summary; see [tool.coverage.report] in pyproject.toml)
+      ZKGPU_COVERAGE_GPU_ONLY: "# gpu-only"
 
     strategy:
       fail-fast: false

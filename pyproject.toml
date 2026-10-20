@@ -73,7 +73,7 @@ native_parser = false
 
 [[tool.mypy.overrides]]
 # CuPy ships no type information, and CI installs it not at all
-module = ["cupy", "cupy.*"]
+module = ["cupy", "cupy.*", "cupy_backends", "cupy_backends.*"]
 ignore_missing_imports = true
 
 [tool.coverage.run]
@@ -82,12 +82,19 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
-# CI runners have no GPU, so the CUDA code paths never execute there (~83% total;
-# ~97% on a GPU machine). This floor guards the CPU and fallback code, with a
-# little headroom for platform-specific lines (the Windows DLL-path logic).
+# CI runners have no GPU, so the CUDA code paths never execute there: ~88% in CI
+# with the "# gpu-only" exclusion below, ~98% on a GPU machine. This floor guards
+# the CPU and fallback code, with headroom for platform-specific lines (the
+# Windows DLL-path logic) and for GPU code in modules not yet marked.
 fail_under = 82
 exclude_also = [
     'raise AssertionError\("unreachable',
+    # Code that can only run on a CUDA GPU is marked "# gpu-only" (on the def
+    # line for a whole function). CI sets ZKGPU_COVERAGE_GPU_ONLY="# gpu-only"
+    # to leave it out of its measurement; elsewhere the default (?!) matches
+    # nothing, so a GPU machine still counts every line. Marked so far:
+    # gpu_backend and field256_gpu.
+    '${ZKGPU_COVERAGE_GPU_ONLY-(?!)}',
 ]
 
 [tool.pytest.ini_options]

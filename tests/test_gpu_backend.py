@@ -109,6 +109,35 @@ def test_detect_reports_each_failure_stage(monkeypatch, stage, expected_reason):
         assert re.search(expected_reason, reason)
 
 
+PROBE_SOURCE = 'extern "C" __global__ void probe(long long* x) { x[0] = 42; }'
+
+
+def _run_probe(module):
+    x = gpu_backend.cp.zeros(1, dtype=gpu_backend.cp.int64)
+    module.get_function("probe")((1,), (1,), (x,))
+    return int(x[0])
+
+
+@pytest.mark.gpu
+def test_compile_module_builds_runnable_kernels():
+    assert _run_probe(gpu_backend.compile_module(PROBE_SOURCE, "probe")) == 42
+
+
+@pytest.mark.gpu
+def test_compile_module_falls_back_when_the_driver_is_older_than_nvrtc(monkeypatch):
+    """Such a driver cannot load NVRTC's PTX, so CuPy's own machine-code path is used."""
+    monkeypatch.setattr(gpu_backend.cp.cuda.runtime, "driverGetVersion", lambda: 1000)  # CUDA 1.0
+    module = gpu_backend.compile_module(PROBE_SOURCE, "probe")
+    assert isinstance(module, gpu_backend.cp.RawModule)
+    assert _run_probe(module) == 42
+
+
+@pytest.mark.gpu
+def test_compile_module_reports_the_compiler_log():
+    with pytest.raises(RuntimeError, match=r"compilation of broken failed:\n.*error"):
+        gpu_backend.compile_module("this is not CUDA", "broken")
+
+
 def test_cpu_fallback_warns_with_reason(monkeypatch):
     """Forcing the GPU off must warn with the reason and still return correct values."""
     monkeypatch.setattr(field_gpu, "_gpu_available", False)

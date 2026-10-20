@@ -192,7 +192,7 @@ CuPy needs `nvrtc64_*.dll` to compile GPU kernels. If a CUDA build of PyTorch is
 python scripts/check_gpu.py
 ```
 
-This checks the NVIDIA driver, the CuPy import, CUDA device visibility and kernel compilation (nvrtc), and prints the first layer that fails. It exits with code 1 if the GPU paths are disabled. When any layer fails, the GPU functions still run on the CPU but emit a `GpuFallbackWarning` with the reason. If GPU tests are being skipped, `pytest -rs` lists why.
+This checks the NVIDIA driver, the CuPy import, CUDA device visibility and kernel compilation (nvrtc). It then compiles the 254-bit field kernels, runs their self-test, and reports the NVRTC and driver versions that built them. It prints the first layer that fails. It exits with code 1 if the GPU paths are disabled. When any layer fails, the GPU functions still run on the CPU but emit a `GpuFallbackWarning` with the reason. If GPU tests are being skipped, `pytest -rs` lists why.
 
 > **Windows 11:** Smart App Control can refuse to load CuPy's compiled `.pyd` files ("An Application Control policy has blocked this file"), sometimes only intermittently. The script detects this and shows how to confirm it in the Code Integrity event log.
 
@@ -458,7 +458,12 @@ The `src/` layout means the code is only importable once installed (`pip install
     - **Bit reversal** is an out-of-place gather, using the `__brevll` intrinsic instead of an index table, so the caller's input is never modified.
     - **The twiddle table** is built on the GPU by doubling (log₂ n small launches) and cached per size.
     - **Tests** check it against the CPU NTT and against the domain's elements (the NTT of X lists ω⁰…ω^(n−1)). Mutation checks confirm that skipping the bit reversal, using wrong twiddles, pairing the wrong rows, or getting the inverse's root or 1/n scaling wrong makes them fail.
-- **GPU kernels**: Written with CuPy's `ElementwiseKernel` and, for the 254-bit field, `RawModule` (CUDA C++ compiled at runtime via nvrtc). Works without the full CUDA Toolkit — only nvrtc is needed (bundled with PyTorch on Windows).
+- **GPU kernels**: Written with CuPy's `ElementwiseKernel` and, for the 254-bit field, CUDA C++ modules (compiled at runtime via nvrtc). Works without the full CUDA Toolkit — only nvrtc is needed (bundled with PyTorch on Windows).
+- **A compiler bug, and the guard against the next one**:
+  - **What happened:** with NVRTC 12.8 on this machine's sm_120 (Blackwell) GPU, the machine code NVRTC generated for the 254-bit modules computed wrong Montgomery products in some inlining contexts. For example, `zk_mont_mul(w, w, w)` in a minimal kernel returned garbage for 5·5. Turning off inlining, or optimisation (`-G`), fixed it; lower ptxas optimisation levels did not. The same source compiled to PTX and finished by the driver's newer compiler (CUDA 13.2) was correct, at the same speed.
+  - **The fix:** `gpu_backend.compile_module` builds these modules that way: PTX from NVRTC, machine code from the driver. If the driver is older than NVRTC and cannot load its PTX, it falls back to NVRTC's machine code.
+  - **The guard:** every 254-bit module checks its kernels against Python integers when first loaded and raises an error if they disagree, so a miscompile fails loudly instead of producing wrong field elements.
+  - **The tests:** a regression test runs the exact kernel shape that was miscompiled. Every deliberate kernel break tried (12 of them) is rejected by the self-test.
 - **Fallback**: GPU availability is decided once, at import, in `zkgpu/gpu_backend.py`. When it is unavailable, every GPU function falls back to NumPy/CPU and emits a `GpuFallbackWarning` naming the reason, so no code changes are needed on CPU-only machines.
 - **Benchmarking**: See [Method](#method). Kernels are compiled before any timing starts, so the timings never include CuPy's JIT compilation.
 
