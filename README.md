@@ -5,11 +5,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 
-> The building blocks of a zero-knowledge prover (BN254 field and curve arithmetic, NTT, MSM) in Python, with CUDA kernels (via CuPy) for modular arithmetic and the NTT, and benchmarks that measure what the GPU actually buys.
+> The building blocks of a zero-knowledge prover (BN254 field and curve arithmetic, NTT, MSM) in Python, with CUDA kernels (via CuPy) for 64-bit and 254-bit modular arithmetic and the NTT, and benchmarks that measure what the GPU actually buys.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="results/speedup_curve_dark.png">
-  <img alt="GPU speedup over CPU code running the same algorithm. Field multiplication: 45.7x with data on the GPU, 1.4x including copies, at 10M elements. NTT: 143.5x and 65.5x at 2^20. MSM Pippenger: 1.0x at every size." src="results/speedup_curve.png">
+  <img alt="GPU speedup over CPU code running the same algorithm. 64-bit field multiplication: 44.3x with data on the GPU, 1.4x including copies, at 10M elements. 254-bit field multiplication over BN254 Fr: 909.8x with data on the GPU, 0.6x from and to Python ints, at 1M elements. NTT: 146.9x and 67.3x at 2^20. MSM Pippenger: 1.0x at every size." src="results/speedup_curve.png">
 </picture>
 
 ---
@@ -20,19 +20,21 @@ The two most expensive steps of a Groth16 or PLONK prover are the MSM and the NT
 
 | Operation | ZK usage | What runs on the GPU | GPU speedup at the largest size measured |
 |---|---|---|---|
-| **Field multiplication** | Building block of everything else | The whole operation (CuPy kernel), for moduli below 2⁶³ | **45.7x** with data on the GPU, **1.4x** including copies (10M elements) |
-| **NTT** | Polynomial arithmetic (Groth16, PLONK) | Every butterfly stage, for moduli below 2⁶³ | **143.5x** with data on the GPU, **65.5x** including copies (2²⁰ elements) |
+| **Field multiplication**, 64-bit | Building block of everything else | The whole operation (CuPy kernel), for moduli below 2⁶³ | **44.3x** with data on the GPU, **1.4x** including copies (10M elements) |
+| **Field multiplication**, 254-bit | BN254's real fields: Fr for polynomials, Fq for curve points | The whole operation (CUDA Montgomery kernel) | **910x** with data on the GPU, but **0.59x** from and to Python ints (1M elements), against Python ints |
+| **NTT** | Polynomial arithmetic (Groth16, PLONK) | Every butterfly stage, for moduli below 2⁶³ | **146.9x** with data on the GPU, **67.3x** including copies (2²⁰ elements) |
 | **MSM**, BN254 G1 | Groth16's linear combinations of curve points | Only the window-digit extraction | **1.0x** (10,000 points); all curve arithmetic is Python on the CPU |
 
-Measured on an NVIDIA GeForce RTX 5050 Laptop GPU against NumPy on an AMD Ryzen 7 260; see [Benchmark results](#benchmark-results).
+Measured on an NVIDIA GeForce RTX 5050 Laptop GPU against NumPy and Python ints on an AMD Ryzen 7 260; see [Benchmark results](#benchmark-results).
 
 ### Scope and limits
 
 This is a tested prototype, not yet a GPU prover for BN254:
 
 - **The GPU NTT uses 64-bit integers**, so it works over primes below 2⁶³; the benchmarks use 998244353. BN254's two 254-bit fields now have GPU multiplication, addition and subtraction (`zkgpu.field256_gpu`), but the NTT and MSM do not use them yet, so BN254's NTT (`Radix2Domain`) still runs on the CPU.
-- **The MSM gains are algorithmic.** Pippenger is 6.9x faster than the naive method at 1,000 points, and Jacobian coordinates made every MSM 18–28x faster. The GPU contributes nothing measurable yet.
-- **The baselines are fair, but they are not the fastest CPU code possible.** Each GPU path is compared with NumPy running the same algorithm, which is the right comparison for this package. Optimised native libraries (C++/Rust, multithreaded) would be considerably faster than NumPy and would shrink these ratios.
+- **The MSM gains are algorithmic.** Pippenger is 7.0x faster than the naive method at 1,000 points, and Jacobian coordinates made every MSM 18–28x faster. The GPU contributes nothing measurable yet.
+- **The baselines are fair, but they are not the fastest CPU code possible.** Each GPU path is compared with the best CPU code this package has for the same job, which is the right comparison for it. Optimised native libraries (C++/Rust, multithreaded) would be considerably faster and would shrink these ratios. That matters most for the 254-bit field, where the baseline is interpreted Python integers, so its 910x overstates the gain over a good CPU library.
+- **The 254-bit kernels only pay off on data that stays on the GPU.** Converting between Python ints and the GPU's format costs more than the multiplication itself (see [below](#field-multiplication-254-bit-bn254-fr)).
 
 The next steps build BN254's NTT and MSM point arithmetic on those 254-bit kernels.
 
@@ -57,37 +59,49 @@ Both apply the same operation to millions of independent values at each step: ev
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="results/latency_comparison_dark.png">
-  <img alt="Time per call by implementation, log scales. Field multiplication: the GPU with data on the device is fastest, while the GPU including copies roughly matches NumPy from 1M elements up. NTT: GPU time stays near 1-4 ms up to 2^20, against 277 ms for NumPy and 3.2 s for pure Python. MSM: Pippenger is fastest, and its CPU and GPU-digit lines coincide." src="results/latency_comparison.png">
+  <img alt="Time per call by implementation, log scales. 64-bit field multiplication: the GPU with data on the device is fastest, while the GPU including copies roughly matches NumPy from 1M elements up. 254-bit field multiplication: 0.31 ms on the GPU at 1M elements against 281 ms for Python ints, while starting and ending with Python ints is slower than Python ints alone. NTT: GPU time stays near 1-4 ms up to 2^20, against 278 ms for NumPy and 3.1 s for pure Python. MSM: Pippenger is fastest, and its CPU and GPU-digit lines coincide." src="results/latency_comparison.png">
 </picture>
 
-> Measured at commit `1c9218f` with a clean working tree, on AC power. **GPU:** NVIDIA GeForce RTX 5050 Laptop GPU (compute capability 12.0, 8 GiB), CUDA runtime 12.9, CuPy 14.0.1. **CPU:** AMD Ryzen 7 260 (16 logical cores). **Software:** Windows 11, Python 3.13.9, NumPy 2.3.4. The raw numbers and full metadata are in [`results/all_results.json`](results/all_results.json).
+> Measured at commit `df75d1a` with a clean working tree, on AC power. **GPU:** NVIDIA GeForce RTX 5050 Laptop GPU (compute capability 12.0, 8 GiB), CUDA runtime 12.9, CuPy 14.0.1. **CPU:** AMD Ryzen 7 260 (16 logical cores). **Software:** Windows 11, Python 3.13.9, NumPy 2.3.4. The raw numbers and full metadata are in [`results/all_results.json`](results/all_results.json).
 
 How to read the tables:
 
 - **GPU** means the input is already on the GPU and the output stays there. That is the cost for a prover that keeps its data on the device.
 - **GPU + copies** means the input starts in host memory and the output is copied back.
 - Every time is a median in milliseconds, and every implementation's output was checked against a reference before its time was accepted (see [Method](#method)).
-- The largest sizes are stable to within about 10% between runs. The smallest sizes, where single calls take microseconds, can vary by up to 2x: field multiplication at 100,000 elements measured between 7.5x (the run below) and 14.0x in four runs.
+- **Expect some variation between runs.** Across three runs of this commit, the GPU speedups varied by up to 20% at the largest sizes (the NTT at 2²⁰ measured 123–147x) and by about 50% at the smallest, where a call takes microseconds. The 254-bit field and MSM ratios were the steadiest, within 5%. The tables show one of those runs.
 
-### Field multiplication (mod 998244353)
+### Field multiplication, 64-bit (mod 998244353)
 
 | N | NumPy (ms) | GPU (ms) | GPU + copies (ms) | GPU speedup | With copies |
 |---:|---:|---:|---:|---:|---:|
-| 10,000 | 0.019 | 0.014 | 0.148 | 1.3x | 0.13x |
-| 100,000 | 0.171 | 0.023 | 0.406 | 7.5x | 0.42x |
-| 1,000,000 | 3.26 | 0.052 | 2.69 | 62.4x | 1.2x |
-| 10,000,000 | 33.7 | 0.737 | 24.7 | 45.7x | 1.4x |
+| 10,000 | 0.019 | 0.017 | 0.135 | 1.1x | 0.14x |
+| 100,000 | 0.207 | 0.018 | 0.395 | 11.5x | 0.52x |
+| 1,000,000 | 3.26 | 0.053 | 2.81 | 61.8x | 1.2x |
+| 10,000,000 | 33.3 | 0.751 | 24.6 | 44.3x | 1.4x |
 
 One multiplication per element is too little work to pay for moving the data, so even at 10 million elements the GPU including copies is only 1.4x faster. Field kernels pay off inside a longer computation whose data stays on the GPU.
+
+### Field multiplication, 254-bit (BN254 Fr)
+
+| N | Python ints (ms) | GPU (ms) | GPU from/to Python ints (ms) | GPU speedup | From/to Python ints |
+|---:|---:|---:|---:|---:|---:|
+| 10,000 | 2.63 | 0.021 | 4.06 | 125.9x | 0.65x |
+| 100,000 | 28.3 | 0.038 | 43.0 | 753.9x | 0.66x |
+| 1,000,000 | 281 | 0.309 | 476 | 909.8x | 0.59x |
+
+- **The baseline** is Python's own integers on NumPy object arrays, about 280 ns per multiplication. That is the fastest pure-Python option, and the only CPU implementation of 254-bit arithmetic in this package. Interpreted big integers allocate a new object for every result, which native fixed-width Montgomery code never does, so the 910x overstates what the GPU gains over an optimised CPU library.
+- **With data on the GPU,** 1M multiplications take 0.31 ms, about 3.2 billion per second.
+- **Starting and ending with Python ints is slower than the CPU** (0.59x). Converting each element between a Python int and four 64-bit limbs costs about 150 ns in each direction, more than the multiplication itself. That is close to the limit of pure Python: the alternatives tried were at most 20% faster. These kernels are meant for data that stays on the GPU across many operations, which is how the NTT and MSM will use them.
 
 ### NTT (radix-2 Cooley-Tukey, mod 998244353)
 
 | N | Pure Python (ms) | NumPy (ms) | GPU (ms) | GPU + copies (ms) | GPU first call (ms) | GPU speedup | With copies |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 2¹⁴ | 32.5 | 1.28 | 1.29 | 1.48 | 2.98 | 1.00x | 0.86x |
-| 2¹⁶ | 148 | 5.82 | 1.50 | 1.69 | 4.40 | 3.9x | 3.4x |
-| 2¹⁸ | 671 | 40.3 | 1.69 | 2.33 | 20.7 | 23.8x | 17.3x |
-| 2²⁰ | 3,182 | 277 | 1.93 | 4.23 | 119 | 143.5x | 65.5x |
+| 2¹⁴ | 32.6 | 1.23 | 1.32 | 1.52 | 2.84 | 0.93x | 0.81x |
+| 2¹⁶ | 144 | 5.42 | 1.56 | 1.81 | 4.53 | 3.5x | 3.0x |
+| 2¹⁸ | 686 | 39.2 | 1.58 | 3.48 | 22.4 | 24.9x | 11.3x |
+| 2²⁰ | 3,122 | 278 | 1.89 | 4.13 | 114 | 146.9x | 67.3x |
 
 - **The GPU time hardly grows** between 2¹⁴ and 2²⁰. It costs a near-constant 0.09–0.10 ms per butterfly stage, and there are log₂ N stages. Each stage dispatches about six separate kernels from Python, so the time goes into that per-stage overhead rather than arithmetic. A single fused kernel would remove most of it.
 - **The first call for each size** builds the twiddle table and bit-reversal index on the GPU and caches them; later calls reuse them. The NumPy baseline caches its tables the same way.
@@ -97,13 +111,13 @@ One multiplication per element is too little work to pay for moving the data, so
 
 | N | Window | Naive (ms) | Straus/Shamir (ms) | Pippenger, CPU (ms) | Pippenger, GPU digits (ms) | GPU contribution |
 |---:|---:|---:|---:|---:|---:|---:|
-| 100 | 5 | 100 | 43.3 | 24.5 | 24.9 | 0.98x |
-| 1,000 | 7 | 1,001 | 433 | 146 | 144 | 1.0x |
-| 10,000 | 10 | — | 4,321 | 1,042 | 1,047 | 0.99x |
+| 100 | 5 | 99.2 | 43.5 | 24.1 | 24.4 | 0.99x |
+| 1,000 | 7 | 1,018 | 431 | 146 | 146 | 1.00x |
+| 10,000 | 10 | — | 4,265 | 1,041 | 1,012 | 1.0x |
 
-- **All the point arithmetic is Python integers on the CPU, in every column.** The differences between columns are algorithmic. Pippenger is 4.1x faster than naive at 100 points and 6.9x at 1,000, and it is 4.1x faster than Straus/Shamir at 10,000.
+- **All the point arithmetic is Python integers on the CPU, in every column.** The differences between columns are algorithmic. Pippenger is 4.1x faster than naive at 100 points and 7.0x at 1,000, and it is 4.1x faster than Straus/Shamir at 10,000.
 - **The window size** follows Pippenger's cost model for each N. A fixed w = 8 would make it look slower than it is at small N.
-- **Moving digit extraction to the GPU changes nothing** (0.98–1.0x, within noise), because the bucket accumulation (point additions) dominates the cost.
+- **Moving digit extraction to the GPU changes nothing** (0.98–1.03x across three runs, within noise), because the bucket accumulation (point additions) dominates the cost.
 - **Naive is skipped at 10,000 points.** It costs a steady 1.0 ms per point, so about 10 s.
 
 ### Method
