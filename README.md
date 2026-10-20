@@ -114,6 +114,16 @@ $torch_lib = "C:\Users\YOUR_NAME\AppData\Local\Programs\Python\Python313\Lib\sit
 
 If you don't have PyTorch, install the full [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) which includes nvrtc.
 
+### Verify the GPU setup
+
+```bash
+python scripts/check_gpu.py
+```
+
+This checks the NVIDIA driver, the CuPy import, CUDA device visibility and kernel compilation (nvrtc), and prints the first layer that fails. It exits with code 1 if the GPU paths are disabled. When any layer fails, the GPU functions still run on the CPU but emit a `GpuFallbackWarning` with the reason. If GPU tests are being skipped, `pytest -rs` lists why.
+
+> **Windows 11:** Smart App Control can refuse to load CuPy's compiled `.pyd` files ("An Application Control policy has blocked this file"), sometimes only intermittently. The script detects this and shows how to confirm it in the Code Integrity event log.
+
 ---
 
 ## Usage
@@ -242,6 +252,7 @@ pytest tests/ -v
 ```
 zk-gpu-accelerator/
 ├── src/
+│   ├── gpu_backend.py # One-time CUDA/CuPy detection + reason when unavailable
 │   ├── field.py       # Fp arithmetic CPU — BN254 scalar field
 │   ├── field_gpu.py   # Fp arithmetic GPU — CuPy ElementwiseKernel
 │   ├── curve.py       # BN254 G1 point operations (affine coordinates)
@@ -258,7 +269,10 @@ zk-gpu-accelerator/
 ├── tests/
 │   ├── test_field.py  # 15 correctness tests (all pass)
 │   ├── test_ntt.py    # 9 tests incl. GPU round-trip (all pass)
-│   └── test_msm.py    # 8 tests incl. GPU vs CPU equality (all pass)
+│   ├── test_msm.py    # 8 tests incl. GPU vs CPU equality (all pass)
+│   └── test_gpu_backend.py  # GPU detection reports why it is disabled
+├── scripts/
+│   └── check_gpu.py   # Layer-by-layer GPU setup diagnostic
 ├── demo/
 │   └── prover_simulation.py
 ├── results/           # auto-generated JSON + PNG charts
@@ -273,7 +287,7 @@ zk-gpu-accelerator/
 - **NTT**: Cooley-Tukey iterative with bit-reversal permutation. Modulus `998244353 = 119·2²³ + 1` (NTT-friendly prime supporting up to N = 2²³). GPU butterfly uses CuPy `ElementwiseKernel`.
 - **MSM**: Shamir's simultaneous double-and-add on CPU; Pippenger bucket method with GPU-accelerated scalar window extraction on GPU. BN254 point arithmetic uses Python's arbitrary-precision integers (254-bit coordinates).
 - **GPU kernels**: Written with CuPy's `ElementwiseKernel` (CUDA C++ compiled at runtime via nvrtc). Works without the full CUDA Toolkit — only nvrtc is needed (bundled with PyTorch on Windows).
-- **Fallback**: Every GPU function detects CuPy availability at import time and falls back to NumPy/CPU with a `warnings.warn` — no code changes needed when running on CPU-only machines.
+- **Fallback**: GPU availability is decided once, at import, in `src/gpu_backend.py`. When it is unavailable, every GPU function falls back to NumPy/CPU and emits a `GpuFallbackWarning` naming the reason, so no code changes are needed on CPU-only machines.
 - **Benchmarking**: Median of 3 runs; first GPU run discarded (CuPy JIT warmup).
 
 ---

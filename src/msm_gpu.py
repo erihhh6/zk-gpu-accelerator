@@ -26,52 +26,10 @@ Falls back to CPU msm_naive automatically when CUDA is not available.
 
 from __future__ import annotations
 
-import os
-import warnings
-
 import numpy as np
 
 from src.curve import Point, P as CURVE_P
-
-# ------------------------------------------------------------------
-# PATH setup
-# ------------------------------------------------------------------
-
-def _add_torch_lib_to_path() -> None:
-    try:
-        import torch as _torch
-        torch_lib = os.path.join(os.path.dirname(_torch.__file__), "lib")
-        if os.path.isdir(torch_lib) and torch_lib not in os.environ.get("PATH", ""):
-            os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
-    except ImportError:
-        pass
-
-_add_torch_lib_to_path()
-
-# ------------------------------------------------------------------
-# GPU availability
-# ------------------------------------------------------------------
-
-try:
-    import warnings as _w
-    with _w.catch_warnings():
-        _w.simplefilter("ignore")
-        import cupy as cp
-
-    _probe = cp.ElementwiseKernel("int64 x", "int64 y", "y = x + 1", "_probe_msm")
-    _probe(cp.array([0], dtype=cp.int64))
-    _gpu_available: bool = True
-
-except Exception:
-    _gpu_available = False
-    cp = None  # type: ignore[assignment]
-
-
-def _check_gpu() -> None:
-    if not _gpu_available:
-        raise RuntimeError(
-            "GPU not available. Install cupy-cuda12x and ensure CUDA drivers are installed."
-        )
+from src.gpu_backend import GPU_AVAILABLE as _gpu_available, cp, warn_cpu_fallback
 
 
 # ------------------------------------------------------------------
@@ -109,7 +67,7 @@ def msm_gpu(
         return 0, 0
 
     if not _gpu_available:
-        warnings.warn("GPU not available; falling back to CPU MSM.", stacklevel=2)
+        warn_cpu_fallback("msm_gpu", "the CPU MSM")
 
     # Compute partial results: scalar[i] * Point[i], accumulated
     from src.curve import Point as _Point
@@ -162,6 +120,8 @@ def msm_pippenger_gpu(
     if _gpu_available:
         # GPU-accelerated scalar window extraction
         sc_gpu = cp.array(scalars_int, dtype=cp.int64)
+    else:
+        warn_cpu_fallback("msm_pippenger_gpu", "CPU scalar window extraction")
 
     final_result = _Point.identity()
 

@@ -86,13 +86,11 @@ def test_ntt_zero_vector():
 
 def test_ntt_gpu_equals_cpu():
     """ntt_gpu result matches CPU NTT for N=256."""
-    pytest.importorskip("cupy", reason="CuPy not installed — skipping GPU test")
+    from src.gpu_backend import GPU_AVAILABLE, GPU_UNAVAILABLE_REASON, cp
+    from src.ntt_gpu import ntt_gpu
 
-    import cupy as cp
-    from src.ntt_gpu import ntt_gpu, _gpu_available
-
-    if not _gpu_available:
-        pytest.skip("CUDA GPU not available")
+    if not GPU_AVAILABLE:
+        pytest.skip(f"CUDA GPU not available: {GPU_UNAVAILABLE_REASON}")
 
     random.seed(55)
     n = 256

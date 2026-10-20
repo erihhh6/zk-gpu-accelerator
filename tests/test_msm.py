@@ -72,14 +72,13 @@ def test_msm_length_mismatch_raises():
 
 def test_msm_gpu_equals_cpu():
     """msm_gpu result matches CPU MSM for N=100 random points."""
-    pytest.importorskip("cupy", reason="CuPy not installed — skipping GPU test")
-
     import numpy as np
-    from src.msm_gpu import msm_gpu, _gpu_available
+    from src.gpu_backend import GPU_AVAILABLE, GPU_UNAVAILABLE_REASON
+    from src.msm_gpu import msm_gpu
     from src.curve import P as CURVE_P
 
-    if not _gpu_available:
-        pytest.skip("CUDA GPU not available")
+    if not GPU_AVAILABLE:
+        pytest.skip(f"CUDA GPU not available: {GPU_UNAVAILABLE_REASON}")
 
     random.seed(23)
     n = 100
