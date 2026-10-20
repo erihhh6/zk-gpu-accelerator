@@ -187,6 +187,25 @@ assert ntt(A, MOD, invert=True) == a   # perfect round-trip
 print(polynomial_mul([1, 1], [1, 1], MOD))   # [1, 2, 1] = 1 + 2x + x²
 ```
 
+### Evaluation domains (BN254 Fr)
+
+`Radix2Domain` is the subgroup H of n-th roots of unity that Groth16 and PLONK provers evaluate polynomials on. It supports sizes up to 2²⁸, with the same roots snarkjs/circom use. It provides FFT, inverse FFT, coset FFT and the vanishing polynomial Z_H(X) = Xⁿ − 1. Computing Groth16's quotient h = (A·B − C) / Z_H looks like this:
+
+```python
+from zkgpu import FIELD_MODULUS as r, Radix2Domain
+
+d = Radix2Domain.at_least(5)               # 8 points: one per constraint, rounded up
+a, b = [3, 1, 4, 1, 5], [9, 2, 6, 5, 3]    # coefficients of A(X), B(X)
+c = d.ifft([x * y % r for x, y in zip(d.fft(a), d.fft(b))])   # C agrees with A·B on H
+
+# Z_H is zero on H but the constant g^n - 1 on the coset g·H, so divide there
+z_inv = pow(d.vanishing_eval(d.coset_offset), -1, r)
+h = d.coset_ifft([(x * y - z) * z_inv % r
+                  for x, y, z in zip(d.coset_fft(a), d.coset_fft(b), d.coset_fft(c))])
+```
+
+`tests/test_domain.py` checks that h·Z_H equals A·B − C exactly.
+
 ### NTT (GPU)
 
 ```python
@@ -291,6 +310,7 @@ zk-gpu-accelerator/
 │   ├── field_gpu.py       # Batch modular arithmetic GPU — CuPy ElementwiseKernel
 │   ├── curve.py           # BN254 G1 point operations (affine coordinates)
 │   ├── ntt.py             # Cooley-Tukey NTT CPU (any NTT-friendly prime)
+│   ├── domain.py          # Radix-2 evaluation domains: FFT, coset FFT, Z_H (BN254 Fr)
 │   ├── ntt_gpu.py         # NTT GPU — vectorized butterflies, cached twiddles
 │   ├── msm.py             # MSM CPU — naive + Straus/Shamir double-and-add
 │   └── msm_gpu.py         # MSM — Pippenger (CPU buckets) + GPU window extraction
@@ -306,6 +326,7 @@ zk-gpu-accelerator/
 │   ├── test_field_gpu.py    # GPU field ops vs Python ints, GPU + fallback paths
 │   ├── test_curve.py        # BN254 group law, py_ecc known answers
 │   ├── test_ntt.py          # NTT across moduli, roots-of-unity known answer, GPU
+│   ├── test_domain.py       # domains: snarkjs/arkworks roots, cosets, Groth16 quotient
 │   ├── test_msm.py          # naive / Shamir / Pippenger MSM, GPU + fallback paths
 │   └── test_gpu_backend.py  # GPU detection reports why it is disabled
 ├── scripts/
