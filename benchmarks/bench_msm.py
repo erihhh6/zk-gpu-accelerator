@@ -1,129 +1,108 @@
 """
-benchmarks/bench_msm.py — Benchmark MSM CPU vs GPU for N = 100, 500, 1000, 5000, 10000.
+benchmarks/bench_msm.py — BN254 G1 MSM algorithms on real 254-bit scalars.
 
-Measures:
-  - Latency in milliseconds (median of 3 runs)
-  - Memory transfer time (host→device scalar copy) separately from compute time
+Implementations (all point arithmetic is Python ints on the CPU)
+------------------------------------------------------------------
+naive          zkgpu.msm.msm_naive: one scalar multiplication per point
+straus         zkgpu.msm.msm_double_and_add: shared accumulator (Straus/Shamir)
+pippenger_cpu  zkgpu.msm_gpu.msm_pippenger_gpu with its CPU digit extraction
+pippenger_gpu  the same with GPU digit extraction — the only GPU work in any MSM
 
-Results saved to results/msm_results.json.
+The differences between rows are algorithmic; pippenger_cpu vs pippenger_gpu
+isolates the GPU's contribution, which is negligible until the curve
+arithmetic itself moves to CUDA.
+
+Inputs: scalars uniform in [0, r); points P_i = P_0 + i·S for random P_0, S.
+The progression is as good as independent random points for MSM cost (the
+coordinates are pseudo-random, and all points are distinct) and about 50x
+faster to generate at N = 10,000.
 """
 
 from __future__ import annotations
 
-import json
-import os
 import random
-import statistics
-import time
+import warnings
+from typing import Any
 
-import numpy as np
+from benchmarks._harness import check_equal, forced_cpu_fallback, time_ms
+from zkgpu import msm_gpu as msm_gpu_module
+from zkgpu.curve import G, Point
+from zkgpu.field import FIELD_MODULUS as R
+from zkgpu.gpu_backend import GPU_AVAILABLE, GpuFallbackWarning
+from zkgpu.msm import msm_double_and_add, msm_naive
+from zkgpu.msm_gpu import msm_pippenger_gpu
 
-from zkgpu.curve import G
-from zkgpu.msm import msm_naive
-
-SIZES = [100, 500, 1000, 5000, 10_000]
-RUNS = 3
-
-try:
-    from zkgpu.msm_gpu import _gpu_available, msm_pippenger_gpu
-
-    if _gpu_available:
-        import cupy as cp
-except Exception:
-    _gpu_available = False
-    cp = None  # type: ignore[assignment]
+SCALAR_BITS = R.bit_length()
 
 
-def _generate_inputs(n: int, seed: int = 42):
-    """Generate N random points on BN254 and N random scalars."""
-    rng = random.Random(seed)
-    scalars = [rng.randint(1, 2**32) for _ in range(n)]
-    points = [G * rng.randint(1, 2**32) for _ in range(n)]
-    return points, scalars
+def pippenger_window(n: int) -> int:
+    """
+    Window size minimising Pippenger's estimated point additions for n points.
+
+    Per window: n additions to fill the buckets plus about 2·2^w for the
+    running sums; ceil(254 / w) windows. The default w = 8 is far from optimal
+    at small n, which would make Pippenger look worse than it is.
+    """
+    return min(range(1, 17), key=lambda w: -(-SCALAR_BITS // w) * (n + 2 ** (w + 1)))
 
 
-def benchmark_size(n: int) -> dict:
-    points, scalars = _generate_inputs(n)
-
-    # CPU (median of RUNS)
-    cpu_times = []
-    for _ in range(RUNS):
-        t0 = time.perf_counter()
-        msm_naive(points, scalars)
-        cpu_times.append(time.perf_counter() - t0)
-    cpu_ms = statistics.median(cpu_times) * 1000
-
-    gpu_ms: float | None = None
-    gpu_compute_ms: float | None = None
-    mem_transfer_ms: float | None = None
-    speedup: float | None = None
-
-    if _gpu_available:
-        px_np = np.array([p.x for p in points], dtype=object)
-        py_np = np.array([p.y for p in points], dtype=object)
-        sc_np = np.array(scalars, dtype=np.int64)
-
-        # Warmup (compiles CuPy kernels)
-        msm_pippenger_gpu(px_np[:10], py_np[:10], sc_np[:10])
-
-        total_times = []
-        transfer_times = []
-        compute_times = []
-
-        for _ in range(RUNS):
-            # Scalar host→device transfer time
-            t_xfer_start = time.perf_counter()
-            cp.array(sc_np)  # copied only to time the transfer; the run below does its own
-            cp.cuda.Stream.null.synchronize()
-            t_xfer_end = time.perf_counter()
-
-            t_run_start = time.perf_counter()
-            msm_pippenger_gpu(px_np, py_np, sc_np)
-            t_run_end = time.perf_counter()
-
-            transfer_times.append((t_xfer_end - t_xfer_start) * 1000)
-            total_times.append((t_run_end - t_run_start) * 1000)
-            compute_times.append(total_times[-1] - transfer_times[-1])
-
-        gpu_ms = round(statistics.median(total_times), 3)
-        gpu_compute_ms = round(statistics.median(compute_times), 3)
-        mem_transfer_ms = round(statistics.median(transfer_times), 3)
-        speedup = round(cpu_ms / gpu_ms, 2) if gpu_ms > 0 else None
-
-    return {
-        "n": n,
-        "cpu_ms": round(cpu_ms, 3),
-        "gpu_ms": gpu_ms,
-        "gpu_compute_ms": gpu_compute_ms,
-        "mem_transfer_ms": mem_transfer_ms,
-        "speedup": speedup,
-        "cpu_throughput_keps": round(n / (cpu_ms / 1000) / 1e3, 2),
-        "gpu_throughput_keps": round(n / (gpu_ms / 1000) / 1e3, 2) if gpu_ms else None,
-    }
+def _inputs(n: int) -> tuple[list[Point], list[int]]:
+    rng = random.Random(n)
+    step = G * rng.randrange(1, R)
+    points = [G * rng.randrange(1, R)]
+    for _ in range(n - 1):
+        points.append(points[-1] + step)
+    return points, [rng.randrange(R) for _ in range(n)]
 
 
-def run_bench() -> list[dict]:
-    print("=== MSM Benchmark (naive CPU / Pippenger with GPU window extraction) ===")
-    results = []
-    for n in SIZES:
-        print(f"  N = {n:>6} ...", end=" ", flush=True)
-        r = benchmark_size(n)
-        results.append(r)
-        if r["gpu_ms"]:
-            print(
-                f"CPU {r['cpu_ms']:.1f} ms | Pippenger+GPU {r['gpu_ms']:.1f} ms "
-                f"(compute {r['gpu_compute_ms']:.1f} ms, transfer {r['mem_transfer_ms']:.1f} ms) "
-                f"| Speedup {r['speedup']}x"
-            )
-        else:
-            print(f"CPU {r['cpu_ms']:.1f} ms | GPU N/A")
-    return results
+NAIVE_MAX = 1_000  # naive at 10,000 points costs over ten seconds and shows nothing new
 
 
-if __name__ == "__main__":
-    results = run_bench()
-    os.makedirs("results", exist_ok=True)
-    out_path = os.path.join("results", "msm_results.json")
-    with open(out_path, "w") as f:
-        json.dump(results, f, indent=2)
-    print(f"\nResults saved to {out_path}")
+def _measure(n: int, budget: float) -> dict[str, Any]:
+    """One row: every algorithm at size n, each verified against Straus."""
+    points, scalars = _inputs(n)
+    xs, ys = [p.x for p in points], [p.y for p in points]
+    w = pippenger_window(n)
+
+    ms: dict[str, float] = {}
+    # Pure-Python code has nothing to warm up, so skip the untimed warm-up run
+    ms["straus"], expected = time_ms(
+        lambda: msm_double_and_add(points, scalars), budget_s=budget, max_repeat=3, warmup=False
+    )
+    if n <= NAIVE_MAX:
+        ms["naive"], got = time_ms(
+            lambda: msm_naive(points, scalars), budget_s=budget, max_repeat=3, warmup=False
+        )
+        check_equal("naive", got, expected)
+
+    with forced_cpu_fallback(msm_gpu_module), warnings.catch_warnings():
+        warnings.simplefilter("ignore", GpuFallbackWarning)
+        ms["pippenger_cpu"], got = time_ms(
+            lambda: msm_pippenger_gpu(xs, ys, scalars, window_size=w),
+            budget_s=budget,
+            max_repeat=3,
+            warmup=False,
+        )
+    check_equal("pippenger_cpu", got, expected)
+
+    if GPU_AVAILABLE:
+        msm_pippenger_gpu(xs[:2], ys[:2], scalars[:2], window_size=w)  # compile the digit kernel
+        ms["pippenger_gpu"], got = time_ms(
+            lambda: msm_pippenger_gpu(xs, ys, scalars, window_size=w),
+            budget_s=budget,
+            max_repeat=3,
+            warmup=False,
+            gpu=True,
+        )
+        check_equal("pippenger_gpu", got, expected)
+    return {"n": n, "window_size": w, "verified": True, "ms": ms}
+
+
+def run_bench(*, quick: bool) -> list[dict[str, Any]]:
+    sizes = [8, 32] if quick else [100, 1_000, 10_000]
+    rows = []
+    for n in sizes:
+        rows.append(_measure(n, budget=0.05 if quick else 1.0))
+        timings = "  ".join(f"{k} {v:.1f} ms" for k, v in rows[-1]["ms"].items())
+        print(f"  msm    n={n:>10,}  w={rows[-1]['window_size']:<2} {timings}", flush=True)
+    return rows

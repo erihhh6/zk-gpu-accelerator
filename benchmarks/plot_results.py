@@ -1,229 +1,312 @@
 """
-benchmarks/plot_results.py — Generate benchmark plots from results/all_results.json.
-
-Produces:
-  results/speedup_curve.png       — GPU/CPU speedup vs N for NTT and MSM
-  results/latency_comparison.png  — Bar chart of CPU vs GPU latency
-  results/throughput.png          — Elements/second CPU vs GPU
+benchmarks/plot_results.py — Charts from a benchmark JSON file.
 
 Usage:
-    python benchmarks/plot_results.py
-    python benchmarks/plot_results.py --input results/all_results.json
+    python benchmarks/plot_results.py                          # results/all_results.json
+    python benchmarks/plot_results.py --input results/x.json   # charts go next to the input
+
+Produces, each in a light and a "_dark" variant (for GitHub's <picture> switch):
+  latency_comparison.png  time per implementation vs size: field, NTT, MSM
+  speedup_curve.png       what the GPU buys over the best CPU code running the
+                          same algorithm (NumPy for field/NTT, CPU-digit Pippenger for MSM)
+
+Design: colour follows the implementation and never its rank; every series also
+has its own marker shape (a second channel for colour-vision deficiency and for
+the lighter hues' low contrast on the light surface); one y-axis per panel;
+solid hairline grid. The exact numbers are in the JSON and the README tables.
+Palette: the dataviz reference instance, validated light and dark.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
+import math
 import sys
+from pathlib import Path
+from typing import Any
 
 import matplotlib
 
-matplotlib.use("Agg")  # non-interactive backend (works without display)
-import matplotlib.pyplot as plt
-import matplotlib.ticker as ticker
-import numpy as np
+matplotlib.use("Agg")  # file output only; no display needed
+import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.axes import Axes  # noqa: E402
+from matplotlib.ticker import (  # noqa: E402
+    FixedLocator,
+    FuncFormatter,
+    LogLocator,
+    NullFormatter,
+    NullLocator,
+)
 
-# ------------------------------------------------------------------
-# Style helpers
-# ------------------------------------------------------------------
-
-CPU_COLOR = "#2196F3"  # blue
-GPU_COLOR = "#FF5722"  # orange-red
-STYLE = {
-    "figure.facecolor": "white",
-    "axes.facecolor": "white",
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "axes.grid": False,
-    "font.family": "DejaVu Sans",
-    "font.size": 11,
+THEMES: dict[str, dict[str, Any]] = {
+    "light": {
+        "surface": "#fcfcfb",
+        "ink": "#0b0b0b",
+        "ink_secondary": "#52514e",
+        "muted": "#898781",
+        "grid": "#e1e0d9",
+        "axis": "#c3c2b7",
+        "series": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4"],
+    },
+    "dark": {
+        "surface": "#1a1a19",
+        "ink": "#f0efec",
+        "ink_secondary": "#c3c2b7",
+        "muted": "#898781",
+        "grid": "#2c2c2a",
+        "axis": "#383835",
+        "series": ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181"],
+    },
 }
 
+# implementation -> (legend label, categorical slot, marker). Fixed, so a series
+# keeps its colour whichever subset a run contains.
+SERIES = {
+    "gpu": ("GPU, data on device", 0, "o"),
+    "numpy": ("NumPy (fair CPU baseline)", 1, "s"),
+    "gpu_e2e": ("GPU incl. host-device copies", 2, "^"),
+    "python": ("Pure Python (reference only)", 3, "D"),
+    "gpu_cold": ("GPU first call (builds caches)", 4, "v"),
+    "pippenger_gpu": ("Pippenger, GPU digit extraction", 0, "o"),
+    "pippenger_cpu": ("Pippenger, CPU", 1, "s"),
+    "straus": ("Straus / Shamir", 2, "^"),
+    "naive": ("Naive (one scalar mult per point)", 3, "D"),
+}
 
-def _apply_style() -> None:
-    plt.rcParams.update(STYLE)
+PANELS = [
+    ("field", "Field multiplication", "elements"),
+    ("ntt", "NTT (998244353)", "elements"),
+    ("msm", "MSM, BN254 G1, 254-bit scalars", "points"),
+]
+
+# (benchmark, GPU implementation, CPU implementation of the same algorithm)
+SPEEDUPS = [
+    ("field", "gpu", "numpy"),
+    ("field", "gpu_e2e", "numpy"),
+    ("ntt", "gpu", "numpy"),
+    ("ntt", "gpu_e2e", "numpy"),
+    ("msm", "pippenger_gpu", "pippenger_cpu"),
+]
+SPEEDUP_TITLES = {
+    "field": "Field multiplication: GPU vs NumPy",
+    "ntt": "NTT (998244353): GPU vs NumPy",
+    "msm": "MSM Pippenger: GPU vs CPU digit extraction",
+}
+SPEEDUP_TICKS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000)
 
 
-def _save(fig: plt.Figure, path: str) -> None:
-    fig.savefig(path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  Saved: {path}")
+def _size_label(n: int, bench: str) -> str:
+    if bench == "ntt":
+        return f"$2^{{{n.bit_length() - 1}}}$"
+    for div, suffix in ((1_000_000, "M"), (1_000, "K")):
+        if n >= div:
+            return f"{n // div}{suffix}"
+    return str(n)
 
 
-# ------------------------------------------------------------------
-# Plot 1: Speedup curve
-# ------------------------------------------------------------------
+def _style_axes(ax: Axes, theme: dict[str, Any]) -> None:
+    ax.set_facecolor(theme["surface"])
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color(theme["axis"])
+        ax.spines[side].set_linewidth(0.8)
+    ax.grid(True, which="major", color=theme["grid"], linewidth=0.6, linestyle="-")
+    ax.set_axisbelow(True)
+    ax.tick_params(colors=theme["muted"], labelsize=8.5, length=0)
+    ax.xaxis.label.set_color(theme["ink_secondary"])
+    ax.yaxis.label.set_color(theme["ink_secondary"])
 
 
-def plot_speedup(all_results: dict, out_dir: str) -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    _apply_style()
-    fig.suptitle("GPU Speedup over CPU", fontsize=14, fontweight="bold", y=1.02)
+def _plot_series(ax: Axes, theme: dict[str, Any], impl: str, xs: list[int], ys: list[float]) -> None:
+    label, slot, marker = SERIES[impl]
+    ax.plot(
+        xs,
+        ys,
+        color=theme["series"][slot],
+        linewidth=1.5,
+        solid_capstyle="round",
+        solid_joinstyle="round",
+        marker=marker,
+        markersize=5.5,
+        markeredgecolor=theme["surface"],  # surface ring keeps crossing markers legible
+        markeredgewidth=1.2,
+        label=label,
+    )
 
-    datasets = [
-        ("ntt", "NTT (Cooley-Tukey)", axes[0]),
-        ("msm", "MSM (naive vs Pippenger)", axes[1]),
-    ]
 
-    for key, title, ax in datasets:
-        data = all_results.get(key, [])
-        ns = [r["n"] for r in data]
-        speedups = [r.get("speedup") for r in data]
+def _set_size_ticks(ax: Axes, sizes: list[int], bench: str) -> None:
+    ax.set_xscale("log")
+    ax.set_xticks(sizes)
+    ax.set_xticklabels([_size_label(n, bench) for n in sizes])
+    ax.xaxis.set_minor_locator(NullLocator())
 
-        valid = [(n, s) for n, s in zip(ns, speedups, strict=True) if s is not None]
-        if not valid:
+
+def _legend(ax: Axes, theme: dict[str, Any]) -> None:
+    # Count data series only: reference lines carry matplotlib's "_child" labels
+    series = [line for line in ax.get_lines() if not line.get_label().startswith("_")]
+    if len(series) >= 2:  # one series needs no legend: the panel title names it
+        leg = ax.legend(loc="upper left", frameon=False, fontsize=8, handlelength=1.6)
+        for text in leg.get_texts():
+            text.set_color(theme["ink_secondary"])
+
+
+def _footnote(fig: Any, meta: dict[str, Any], theme: dict[str, Any]) -> None:
+    gpu = meta["gpu"]["name"] if meta.get("gpu") else "no GPU"
+    commit = (meta.get("git_commit") or "unknown")[:7]
+    fig.text(
+        0.01,
+        0.005,
+        f"{gpu} · {meta.get('cpu', 'unknown CPU')} · commit {commit} · median wall-clock times",
+        color=theme["muted"],
+        fontsize=7.5,
+        ha="left",
+        va="bottom",
+    )
+
+
+def _coincide(rows: list[dict[str, Any]], a: str, b: str, tolerance: float = 0.05) -> bool:
+    """True if implementations a and b are within *tolerance* of each other at every size."""
+    pairs = [(row["ms"].get(a), row["ms"].get(b)) for row in rows]
+    return bool(pairs) and all(x and y and abs(x - y) <= tolerance * max(x, y) for x, y in pairs)
+
+
+def plot_latency(results: dict[str, Any], theme: dict[str, Any]) -> Any:
+    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.4))
+    fig.patch.set_facecolor(theme["surface"])
+    fig.suptitle("Time per call, by implementation", color=theme["ink"], fontsize=13, y=0.99)
+    for ax, (bench, title, unit) in zip(axes, PANELS, strict=True):
+        _style_axes(ax, theme)
+        rows = results.get(bench, [])
+        sizes = [row["n"] for row in rows]
+        present = {k for row in rows for k in row["ms"]}
+        for impl in (s for s in SERIES if s in present):  # fixed order: legends match across panels
+            pts = [(row["n"], row["ms"][impl]) for row in rows if row["ms"].get(impl)]
+            if pts:
+                _plot_series(ax, theme, impl, [p[0] for p in pts], [p[1] for p in pts])
+        if bench == "msm" and _coincide(rows, "pippenger_cpu", "pippenger_gpu"):
+            # The finding is that these two overlap; say so, since the top line hides the other
+            ax.text(
+                0.98,
+                0.04,
+                "Pippenger CPU and GPU-digit lines coincide",
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=8,
+                color=theme["muted"],
+            )
+        if sizes:
+            _set_size_ticks(ax, sizes, bench)
+        ax.set_yscale("log")
+        ax.yaxis.set_major_locator(LogLocator(base=10))
+        ax.yaxis.set_minor_formatter(NullFormatter())
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
+        # Colour passed here: set_title() creates the text, so styling it earlier has no effect
+        ax.set_title(title, fontsize=10.5, loc="left", color=theme["ink"])
+        ax.set_xlabel(f"Input size ({unit})", fontsize=9)
+        ax.set_ylabel("Milliseconds (log scale)", fontsize=9)
+        _legend(ax, theme)
+    _footnote(fig, results["meta"], theme)
+    fig.tight_layout(rect=(0, 0.03, 1, 0.97))
+    return fig
+
+
+def plot_speedup(results: dict[str, Any], theme: dict[str, Any]) -> Any:
+    fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.4))
+    fig.patch.set_facecolor(theme["surface"])
+    fig.suptitle(
+        "GPU speedup over CPU code running the same algorithm", color=theme["ink"], fontsize=13, y=0.99
+    )
+    for ax, (bench, _latency_title, unit) in zip(axes, PANELS, strict=True):
+        _style_axes(ax, theme)
+        rows = results.get(bench, [])
+        plotted = []
+        for b, gpu_impl, cpu_impl in SPEEDUPS:
+            if b != bench:
+                continue
+            pts = [
+                (row["n"], row["ms"][cpu_impl] / row["ms"][gpu_impl])
+                for row in rows
+                if row["ms"].get(gpu_impl) and row["ms"].get(cpu_impl)
+            ]
+            if pts:
+                _plot_series(ax, theme, gpu_impl, [p[0] for p in pts], [p[1] for p in pts])
+                plotted.append(pts)
+        ax.set_title(SPEEDUP_TITLES[bench], fontsize=10.5, loc="left", color=theme["ink"])
+        if not plotted:
             ax.text(
                 0.5,
                 0.5,
-                "No GPU data",
+                "No GPU timings in this run",
+                transform=ax.transAxes,
                 ha="center",
                 va="center",
-                transform=ax.transAxes,
-                fontsize=12,
-                color="gray",
+                color=theme["muted"],
+                fontsize=9,
             )
-            ax.set_title(title)
+            ax.set_xticks([])
+            ax.set_yticks([])
             continue
-
-        ns_v, sp_v = zip(*valid, strict=True)
-        ax.plot(ns_v, sp_v, marker="o", color=GPU_COLOR, linewidth=2, markersize=8)
-        ax.axhline(1.0, color="gray", linewidth=1, linestyle="--", alpha=0.6)
-        ax.set_xscale("log", base=2)
-        ax.set_xlabel("N (log scale)")
-        ax.set_ylabel("Speedup (GPU / CPU)")
-        ax.set_title(title)
-        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter("%.1fx"))
-        for n, s in zip(ns_v, sp_v, strict=True):
-            ax.annotate(
-                f"{s:.1f}x", xy=(n, s), xytext=(0, 8), textcoords="offset points", ha="center", fontsize=9
-            )
-
-    fig.tight_layout()
-    _save(fig, os.path.join(out_dir, "speedup_curve.png"))
-
-
-# ------------------------------------------------------------------
-# Plot 2: Latency comparison (bar chart)
-# ------------------------------------------------------------------
+        _set_size_ticks(ax, [row["n"] for row in rows], bench)
+        ax.set_yscale("log")
+        ys = [y for pts in plotted for _, y in pts]
+        # Always span at least 0.5x..2x, so a flat ~1x series still gets readable ticks
+        lo, hi = min([*ys, 0.5]) / 1.4, max([*ys, 2.0]) * 1.4
+        ax.set_ylim(lo, hi)
+        ax.yaxis.set_major_locator(FixedLocator([t for t in SPEEDUP_TICKS if lo <= t <= hi]))
+        ax.yaxis.set_minor_locator(NullLocator())
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}x"))
+        # 1x reference: a solid hairline in the axis colour, never a dashed rule
+        ax.axhline(1.0, color=theme["axis"], linewidth=1.0, zorder=1)
+        ax.set_xlabel(f"Input size ({unit})", fontsize=9)
+        ax.set_ylabel("Speedup (log scale)", fontsize=9)
+        _direct_label_endpoints(ax, theme, plotted)
+        _legend(ax, theme)
+    _footnote(fig, results["meta"], theme)
+    fig.tight_layout(rect=(0, 0.03, 1, 0.97))
+    return fig
 
 
-def plot_latency(all_results: dict, out_dir: str) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
-    _apply_style()
-    fig.suptitle("CPU vs GPU Latency", fontsize=14, fontweight="bold", y=1.02)
-
-    datasets = [
-        ("field", "Field Arithmetic", "N (elements)", axes[0]),
-        ("ntt", "NTT", "N (elements)", axes[1]),
-        ("msm", "MSM", "N (points)", axes[2]),
-    ]
-
-    for key, title, xlabel, ax in datasets:
-        data = all_results.get(key, [])
-        if not data:
-            ax.set_title(title)
-            continue
-
-        ns = [r["n"] for r in data]
-        cpu_ms = [r["cpu_ms"] for r in data]
-        gpu_ms = [r.get("gpu_ms") for r in data]
-
-        x = np.arange(len(ns))
-        width = 0.35
-
-        ax.bar(x - width / 2, cpu_ms, width, label="CPU", color=CPU_COLOR, alpha=0.85)
-        has_gpu = any(v is not None for v in gpu_ms)
-        if has_gpu:
-            gpu_vals = [v if v is not None else 0 for v in gpu_ms]
-            ax.bar(x + width / 2, gpu_vals, width, label="GPU", color=GPU_COLOR, alpha=0.85)
-
-        ax.set_xticks(x)
-        ax.set_xticklabels([str(n) for n in ns], rotation=30, ha="right", fontsize=8)
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel("Latency (ms)")
-        ax.set_title(title)
-        ax.legend()
-
-    fig.tight_layout()
-    _save(fig, os.path.join(out_dir, "latency_comparison.png"))
+def _direct_label_endpoints(ax: Axes, theme: dict[str, Any], plotted: list[list[tuple[int, float]]]) -> None:
+    """Value at each line's end, unless two ends sit too close to label without colliding."""
+    ends = [pts[-1] for pts in plotted]
+    logs = sorted(math.log10(y) for _, y in ends)
+    if any(b - a < 0.12 for a, b in zip(logs, logs[1:], strict=False)):
+        return  # converging ends: the legend carries identity instead of stacked labels
+    for x, y in ends:
+        ax.annotate(
+            f"{y:.1f}x",
+            (x, y),
+            xytext=(6, 0),
+            textcoords="offset points",
+            va="center",
+            fontsize=8,
+            color=theme["ink_secondary"],
+        )
 
 
-# ------------------------------------------------------------------
-# Plot 3: Throughput
-# ------------------------------------------------------------------
-
-
-def plot_throughput(all_results: dict, out_dir: str) -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    _apply_style()
-    fig.suptitle("Throughput: Elements per Second", fontsize=14, fontweight="bold", y=1.02)
-
-    datasets_tp = [
-        ("ntt", "NTT Throughput", "cpu_throughput_meps", "gpu_throughput_meps", "M elements/s", axes[0]),
-        ("msm", "MSM Throughput", "cpu_throughput_keps", "gpu_throughput_keps", "K points/s", axes[1]),
-    ]
-
-    for key, title, cpu_key, gpu_key, ylabel, ax in datasets_tp:
-        data = all_results.get(key, [])
-        if not data:
-            ax.set_title(title)
-            continue
-
-        ns = [r["n"] for r in data]
-        cpu_tp = [r.get(cpu_key, 0) or 0 for r in data]
-        gpu_tp = [r.get(gpu_key) for r in data]
-
-        x = np.arange(len(ns))
-        width = 0.35
-
-        ax.bar(x - width / 2, cpu_tp, width, label="CPU", color=CPU_COLOR, alpha=0.85)
-        has_gpu = any(v is not None for v in gpu_tp)
-        if has_gpu:
-            gpu_vals = [v if v is not None else 0 for v in gpu_tp]
-            ax.bar(x + width / 2, gpu_vals, width, label="GPU", color=GPU_COLOR, alpha=0.85)
-
-        ax.set_xticks(x)
-        ax.set_xticklabels([str(n) for n in ns], rotation=30, ha="right", fontsize=8)
-        ax.set_xlabel("N")
-        ax.set_ylabel(ylabel)
-        ax.set_title(title)
-        ax.legend()
-
-    fig.tight_layout()
-    _save(fig, os.path.join(out_dir, "throughput.png"))
-
-
-# ------------------------------------------------------------------
-# Main entry point
-# ------------------------------------------------------------------
-
-
-def main(input_path: str = "results/all_results.json") -> None:
-    if not os.path.exists(input_path):
-        print(f"ERROR: {input_path} not found. Run benchmarks/run_all.py first.")
+def main(input_path: Path) -> list[Path]:
+    if not input_path.exists():
+        print(f"ERROR: {input_path} not found. Run `python -m benchmarks.run_all` first.")
         sys.exit(1)
-
-    with open(input_path) as f:
-        all_results = json.load(f)
-
-    out_dir = os.path.dirname(input_path) or "results"
-    os.makedirs(out_dir, exist_ok=True)
-
-    print("Generating plots...")
-    plot_speedup(all_results, out_dir)
-    plot_latency(all_results, out_dir)
-    plot_throughput(all_results, out_dir)
-    print("Done.")
+    results = json.loads(input_path.read_text(encoding="utf-8"))
+    out_dir = input_path.parent
+    written = []
+    for theme_name, theme in THEMES.items():
+        suffix = "" if theme_name == "light" else "_dark"
+        for stem, make in (("latency_comparison", plot_latency), ("speedup_curve", plot_speedup)):
+            fig = make(results, theme)
+            path = out_dir / f"{stem}{suffix}.png"
+            fig.savefig(path, dpi=150, facecolor=theme["surface"])
+            plt.close(fig)
+            written.append(path)
+            print(f"  saved {path}")
+    return written
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Plot ZK GPU accelerator benchmark results.")
-    parser.add_argument(
-        "--input",
-        default="results/all_results.json",
-        help="Path to all_results.json (default: results/all_results.json)",
-    )
-    args = parser.parse_args()
-    main(args.input)
+    parser = argparse.ArgumentParser(description="Plot benchmark results.")
+    parser.add_argument("--input", type=Path, default=Path("results/all_results.json"))
+    main(parser.parse_args().input)

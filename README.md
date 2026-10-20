@@ -259,15 +259,13 @@ Scalars may be any integers (negative, or larger than r); they are reduced mod r
 ### Run benchmarks
 
 ```bash
-# All benchmarks + summary table
-python -m benchmarks.run_all
-
-# Generate PNG charts from results
-python benchmarks/plot_results.py
-
-# Groth16 prover timing simulation
-python demo/prover_simulation.py
+python -m benchmarks.run_all           # full run (~20 s) -> results/all_results.json + summary table
+python -m benchmarks.run_all --quick   # smoke test in seconds -> results/quick_results.json (gitignored)
+python benchmarks/plot_results.py      # charts, light and dark, next to the JSON
+python demo/prover_simulation.py       # Groth16 prover timing simulation
 ```
+
+Each run checks every implementation's output against a reference before accepting its timing. It compares against fair CPU baselines (vectorised NumPy for field ops and NTT, the same MSM algorithms on the CPU) on real 254-bit MSM scalars. It also records the hardware, library versions and git commit in the JSON. GPU numbers come in two forms: data already on the device (`gpu`), and including host↔device copies (`gpu_e2e`). The timing method is described in `benchmarks/_harness.py`.
 
 ### Run tests
 

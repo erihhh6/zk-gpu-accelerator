@@ -1,92 +1,88 @@
 """
-benchmarks/run_all.py — Run all benchmarks sequentially and save a combined JSON.
+benchmarks/run_all.py — Run every benchmark and save one JSON file with metadata.
 
 Usage (from the repo root, with the package installed):
-    python -m benchmarks.run_all
+    python -m benchmarks.run_all                 # full run -> results/all_results.json
+    python -m benchmarks.run_all --quick         # seconds-long smoke run -> results/quick_results.json
+    python -m benchmarks.run_all --output out.json
 
-Output:
-    results/all_results.json  — combined benchmark data
-    A summary table is printed to stdout.
+Every implementation's output is checked against a reference before its
+timing is accepted, so a fast but wrong result fails the run instead of
+appearing in the table. See benchmarks/_harness.py for the timing method.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
-import os
 import time
+from pathlib import Path
+from typing import Any
 
-from benchmarks.bench_field import run_bench as bench_field
-from benchmarks.bench_msm import run_bench as bench_msm
-from benchmarks.bench_ntt import run_bench as bench_ntt
+from benchmarks import bench_field, bench_msm, bench_ntt
+from benchmarks._harness import REPO_ROOT, collect_metadata
 
+FULL_OUTPUT = REPO_ROOT / "results" / "all_results.json"
+QUICK_OUTPUT = REPO_ROOT / "results" / "quick_results.json"  # gitignored: never mistaken for real data
 
-def _fmt(val: float | None, suffix: str = "") -> str:
-    if val is None:
-        return "N/A"
-    return f"{val:.1f}{suffix}"
-
-
-def print_summary(all_results: dict) -> None:
-    print("\n" + "=" * 72)
-    print("BENCHMARK SUMMARY")
-    print("=" * 72)
-
-    # Field
-    print("\n[Field Arithmetic — modular multiplication]")
-    print(f"{'N':>12}  {'CPU ms':>10}  {'GPU ms':>10}  {'Speedup':>8}")
-    for r in all_results["field"]:
-        print(
-            f"{r['n']:>12,}  {_fmt(r['cpu_ms'], ' ms'):>10}  "
-            f"{_fmt(r['gpu_ms'], ' ms'):>10}  {_fmt(r['speedup'], 'x'):>8}"
-        )
-
-    # NTT
-    print("\n[NTT — Cooley-Tukey, MOD=998244353]")
-    print(f"{'N':>10}  {'CPU ms':>10}  {'GPU ms':>10}  {'Speedup':>8}")
-    for r in all_results["ntt"]:
-        print(
-            f"{r['n']:>10}  {_fmt(r['cpu_ms'], ' ms'):>10}  "
-            f"{_fmt(r['gpu_ms'], ' ms'):>10}  {_fmt(r['speedup'], 'x'):>8}"
-        )
-
-    # MSM
-    print("\n[MSM — naive CPU / Pippenger with GPU window extraction, BN254]")
-    print(f"{'N':>8}  {'CPU ms':>10}  {'GPU ms':>10}  {'Speedup':>8}")
-    for r in all_results["msm"]:
-        print(
-            f"{r['n']:>8}  {_fmt(r['cpu_ms'], ' ms'):>10}  "
-            f"{_fmt(r['gpu_ms'], ' ms'):>10}  {_fmt(r['speedup'], 'x'):>8}"
-        )
-
-    print("\n" + "=" * 72)
+# For each benchmark: the fair CPU baseline, and the GPU timing a caller actually experiences
+BASELINE = {"field": "numpy", "ntt": "numpy", "msm": "naive"}
 
 
-def main() -> None:
-    os.makedirs("results", exist_ok=True)
-    all_results: dict = {}
+def run(*, quick: bool, output: Path) -> dict[str, Any]:
+    results: dict[str, Any] = {"meta": collect_metadata(quick=quick)}
+    for name, module in (("field", bench_field), ("ntt", bench_ntt), ("msm", bench_msm)):
+        t0 = time.perf_counter()
+        print(f"\n>>> {name}")
+        results[name] = module.run_bench(quick=quick)
+        print(f"    done in {time.perf_counter() - t0:.1f} s")
 
-    print("\n>>> Running field benchmark...")
-    t0 = time.perf_counter()
-    all_results["field"] = bench_field()
-    print(f"    Done in {time.perf_counter() - t0:.1f}s")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+    print_summary(results)
+    print(f"\nResults saved to {output}")
+    return results
 
-    print("\n>>> Running NTT benchmark...")
-    t0 = time.perf_counter()
-    all_results["ntt"] = bench_ntt()
-    print(f"    Done in {time.perf_counter() - t0:.1f}s")
 
-    print("\n>>> Running MSM benchmark...")
-    t0 = time.perf_counter()
-    all_results["msm"] = bench_msm()
-    print(f"    Done in {time.perf_counter() - t0:.1f}s")
+def _fmt(ms: float | None) -> str:
+    if ms is None:
+        return "-"
+    return f"{ms:.3f}" if ms < 10 else f"{ms:.1f}"
 
-    out_path = os.path.join("results", "all_results.json")
-    with open(out_path, "w") as f:
-        json.dump(all_results, f, indent=2)
 
-    print_summary(all_results)
-    print(f"\nAll results saved to {out_path}")
+def print_summary(results: dict[str, Any]) -> None:
+    meta = results["meta"]
+    gpu = meta["gpu"]["name"] if meta["gpu"] else f"none ({meta['gpu_unavailable_reason']})"
+    print("\n" + "=" * 78)
+    print(f"SUMMARY  (CPU: {meta['cpu']}, GPU: {gpu})")
+    for name in ("field", "ntt", "msm"):
+        rows = results[name]
+        impls = list(dict.fromkeys(k for row in rows for k in row["ms"]))
+        base = BASELINE[name]
+        print(f"\n[{name}]  times in ms; 'x' columns = speedup over {base}")
+        print(f"{'n':>10}  " + "  ".join(f"{i:>13}" for i in impls))
+        for row in rows:
+            cells = []
+            for impl in impls:
+                ms = row["ms"].get(impl)
+                ref = row["ms"].get(base)
+                speedup = f" {ref / ms:5.1f}x" if ms and ref and impl != base else ""
+                cells.append(f"{_fmt(ms) + speedup:>13}")
+            print(f"{row['n']:>10}  " + "  ".join(cells))
+    print("=" * 78)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--quick", action="store_true", help="tiny sizes and time budgets (smoke test)")
+    parser.add_argument("--output", type=Path, help="where to write the JSON results")
+    args = parser.parse_args(argv)
+    output = args.output or (QUICK_OUTPUT if args.quick else FULL_OUTPUT)
+    run(quick=args.quick, output=output)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

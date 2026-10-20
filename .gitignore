@@ -22,7 +22,9 @@ env/
 htmlcov/
 
 # Results (committed so README charts display on GitHub)
-# results/*.json and results/*.png are intentionally tracked
+# results/*.json and results/*.png are intentionally tracked, except quick
+# smoke runs, whose tiny sizes must never be mistaken for real measurements
+results/quick_results.json
 
 # Jupyter
 .ipynb_checkpoints/
