@@ -6,6 +6,7 @@ Submodules
 gpu_backend : one-time CUDA/CuPy detection; records why the GPU is unavailable
 field       : Finite field arithmetic (CPU baseline) over BN254 scalar field
 field_gpu   : Batch modular arithmetic on GPU (CuPy ElementwiseKernel, int64 moduli)
+field256_gpu: 254-bit field arithmetic on GPU (CUDA Montgomery kernels; BN254 Fr and Fq)
 curve       : BN254 elliptic curve point operations (affine coordinates)
 ntt         : Number Theoretic Transform — Cooley-Tukey CPU implementation
 domain      : Radix-2 evaluation domains over BN254 Fr: FFT, coset FFT, Z_H

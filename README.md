@@ -30,11 +30,11 @@ Measured on an NVIDIA GeForce RTX 5050 Laptop GPU against NumPy on an AMD Ryzen 
 
 This is a tested prototype, not yet a GPU prover for BN254:
 
-- **The GPU kernels use 64-bit integers**, so they work over primes below 2⁶³; the benchmarks use 998244353. BN254's scalar field is 254 bits wide, so its NTT (`Radix2Domain`) currently runs on the CPU.
+- **The GPU NTT uses 64-bit integers**, so it works over primes below 2⁶³; the benchmarks use 998244353. BN254's two 254-bit fields now have GPU multiplication, addition and subtraction (`zkgpu.field256_gpu`), but the NTT and MSM do not use them yet, so BN254's NTT (`Radix2Domain`) still runs on the CPU.
 - **The MSM gains are algorithmic.** Pippenger is 6.9x faster than the naive method at 1,000 points, and Jacobian coordinates made every MSM 18–28x faster. The GPU contributes nothing measurable yet.
 - **The baselines are fair, but they are not the fastest CPU code possible.** Each GPU path is compared with NumPy running the same algorithm, which is the right comparison for this package. Optimised native libraries (C++/Rust, multithreaded) would be considerably faster than NumPy and would shrink these ratios.
 
-The next step is 254-bit Montgomery arithmetic written in CUDA, which moves BN254's NTT and MSM point arithmetic onto the GPU.
+The next steps build BN254's NTT and MSM point arithmetic on those 254-bit kernels.
 
 ---
 
@@ -200,6 +200,19 @@ print(gpu_batch_add(a, b, MOD))   # [7, 11, 15]
 print(gpu_batch_pow(a, 3, MOD))   # [27, 125, 343]
 ```
 
+### GPU Field Arithmetic, 254-bit (BN254 Fr and Fq)
+
+```python
+from zkgpu.field256_gpu import BN254_FR as Fr   # BN254_FQ for the base field
+
+a = Fr.from_ints([3, 5, -1])    # any ints: reduced mod r, stored on the GPU in Montgomery form
+b = Fr.from_ints([4, 6, -1])
+print(Fr.to_ints(Fr.mul(a, b)))                    # [12, 30, 1]
+print(Fr.to_ints(Fr.add(a, Fr.from_ints([1]))))    # [4, 6, 0]: a single row broadcasts
+```
+
+A batch of n elements is an `(n, 4)` uint64 array of 64-bit limbs. Results stay in that form on the GPU, so they can feed further operations without copying, and `to_ints` reads them back. `Field256(modulus)` works the same way for any odd modulus below 2²⁵⁵.
+
 ### BN254 Curve Operations
 
 ```python
@@ -347,6 +360,7 @@ zk-gpu-accelerator/
 │   ├── gpu_backend.py     # One-time CUDA/CuPy detection + reason when unavailable
 │   ├── field.py           # Fp arithmetic CPU — BN254 scalar field
 │   ├── field_gpu.py       # Batch modular arithmetic GPU — CuPy ElementwiseKernel
+│   ├── field256_gpu.py    # 254-bit field arithmetic GPU — CUDA Montgomery kernels (BN254)
 │   ├── curve.py           # BN254 G1 points (affine) + Jacobian formulas for long chains
 │   ├── ntt.py             # Cooley-Tukey NTT CPU (any NTT-friendly prime)
 │   ├── domain.py          # Radix-2 evaluation domains: FFT, coset FFT, Z_H (BN254 Fr)
@@ -364,6 +378,7 @@ zk-gpu-accelerator/
 │   ├── known_bugs.py        # Strict-xfail marker for documented, unfixed bugs
 │   ├── test_field.py        # Fp arithmetic (CPU)
 │   ├── test_field_gpu.py    # GPU field ops vs Python ints, GPU + fallback paths
+│   ├── test_field256_gpu.py # 254-bit kernels vs Python ints, gnark/arkworks constants
 │   ├── test_curve.py        # BN254 group law, py_ecc known answers
 │   ├── test_ntt.py          # NTT across moduli, roots-of-unity known answer, GPU
 │   ├── test_domain.py       # domains: snarkjs/arkworks roots, cosets, Groth16 quotient
@@ -387,7 +402,14 @@ The `src/` layout means the code is only importable once installed (`pip install
 - **NTT**: Cooley-Tukey iterative with bit-reversal permutation. The default modulus is `998244353 = 119·2²³ + 1` (N ≤ 2²³), but any odd prime works up to its 2-adicity, including BN254's scalar field r (2-adicity 28, N ≤ 2²⁸). Roots of unity come from the field's smallest quadratic non-residue, which yields primitive power-of-two roots without factoring p − 1, and every root is checked to be primitive. The GPU version (`zkgpu/ntt_gpu.py`) handles primes below 2⁶³: it caches its twiddle table and bit-reversal index on the device for each size, and uses `zkgpu/field_gpu.py` for exact modular arithmetic. BN254's r does not fit in int64, so it is CPU-only for now.
 - **MSM**: Naive and Straus/Shamir simultaneous double-and-add on CPU (one shared accumulator: ~254 doublings in total instead of N·254, 2.3× faster than naive for 254-bit scalars in the benchmark above); Pippenger bucket method: scalars are reduced mod r and split into four 64-bit limbs, one GPU kernel extracts every window digit at once (a single device-to-host copy), and bucket accumulation plus Horner's-rule window combination (~254 doublings) stay on the CPU. All BN254 point arithmetic uses Python's arbitrary-precision integers (254-bit coordinates).
 - **Curve arithmetic**: `Point` is affine, but scalar multiplication and every MSM run in Jacobian coordinates (X, Y, Z) ↦ (X/Z², Y/Z³). Those additions and doublings need no modular inverse, so a whole chain of operations pays for one inverse at the end, when converting back. The formulas are the Explicit-Formulas Database's a = 0 versions (`dbl-2009-l`, `add-2007-bl`, `madd-2007-bl`). Remaining inverses use `pow(a, -1, p)` (extended Euclid, about 42 multiplications) instead of Fermat's `a^(p−2)` (about 251). Together these made scalar multiplication about 30× faster and the MSMs 18–28× faster than affine arithmetic, with identical results. Every result is converted back through `Point`, so it is re-validated to lie on the curve.
-- **GPU kernels**: Written with CuPy's `ElementwiseKernel` (CUDA C++ compiled at runtime via nvrtc). Works without the full CUDA Toolkit — only nvrtc is needed (bundled with PyTorch on Windows).
+- **254-bit field (GPU)**: `zkgpu/field256_gpu.py` stores each element as four 64-bit limbs, in Montgomery form (a·R mod p, R = 2²⁵⁶).
+  - **Multiplication** is CIOS Montgomery multiplication (Koç, Acar and Kaliski), one thread per element. Each step adds a·bᵢ plus a multiple of p that clears the lowest word, so no division is ever needed. 64×64→128-bit products come from `__umul64hi`.
+  - **Five words of temporary state are enough, not six**, because the moduli are below 2²⁵⁵. The kernel source carries the bound proof, and a test replays the algorithm word by word to check it, including at the extreme 2²⁵⁵−19.
+  - **Reductions are branch-free selects**, so the threads of a warp never diverge on data.
+  - **The modulus is compiled into the kernel** as constants, giving one CUDA module per field, built on first use.
+  - **Memory reads stay coalesced:** one 32-byte row is exactly one memory sector, so a warp reading consecutive rows uses every byte it fetches.
+  - **Tests** check gnark's published Montgomery constants for both BN254 fields. Mutation checks confirm that breaking any carry, the constant's sign or the final reduction makes them fail.
+- **GPU kernels**: Written with CuPy's `ElementwiseKernel` and, for the 254-bit field, `RawModule` (CUDA C++ compiled at runtime via nvrtc). Works without the full CUDA Toolkit — only nvrtc is needed (bundled with PyTorch on Windows).
 - **Fallback**: GPU availability is decided once, at import, in `zkgpu/gpu_backend.py`. When it is unavailable, every GPU function falls back to NumPy/CPU and emits a `GpuFallbackWarning` naming the reason, so no code changes are needed on CPU-only machines.
 - **Benchmarking**: See [Method](#method). Kernels are compiled before any timing starts, so the timings never include CuPy's JIT compilation.
 
