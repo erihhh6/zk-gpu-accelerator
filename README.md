@@ -212,19 +212,25 @@ assert result == result2
 ### MSM (GPU — Pippenger)
 
 ```python
+import random
 import numpy as np
+from src.curve import G
+from src.field import FIELD_MODULUS
+from src.msm import msm_double_and_add
 from src.msm_gpu import msm_pippenger_gpu
-from src.curve import G, P as CURVE_P
 
-points = [G * i for i in range(1, 1001)]
-scalars = list(range(1, 1001))
+points = [G * i for i in range(1, 101)]
+scalars = [random.randrange(FIELD_MODULUS) for _ in points]   # full 254-bit scalars
 
+# BN254 coordinates do not fit in int64, so keep them as Python ints (object dtype)
 px = np.array([p.x for p in points], dtype=object)
 py = np.array([p.y for p in points], dtype=object)
-sc = np.array(scalars, dtype=np.int64)
 
-x, y = msm_pippenger_gpu(px, py, sc, CURVE_P, window_size=8)
+result = msm_pippenger_gpu(px, py, scalars, window_size=8)   # returns a Point
+assert result == msm_double_and_add(points, scalars)
 ```
+
+Scalars may be any integers (negative, or larger than r); they are reduced mod r first. The result is `Point.identity()` for the point at infinity.
 
 ### Run benchmarks
 
@@ -292,7 +298,7 @@ zk-gpu-accelerator/
 
 - **Field**: BN254 scalar field (r ≈ 2²⁵⁴). All Fp ops use Python's built-in `pow()` for fast modular exponentiation. The GPU field ops (`src/field_gpu.py`) accept any modulus `2 ≤ mod < 2⁶³` and any int64 inputs, which they reduce first. Products use a plain int64 multiply up to `mod ≤ 3,037,000,500`, and an exact 128-bit-wide routine above that, built on `__umul64hi` because NVRTC on Windows has no `__int128`. The GPU benchmark uses `MOD = 998244353`.
 - **NTT**: Cooley-Tukey iterative with bit-reversal permutation. The default modulus is `998244353 = 119·2²³ + 1` (N ≤ 2²³), but any odd prime works up to its 2-adicity, including BN254's scalar field r (2-adicity 28, N ≤ 2²⁸). Roots of unity come from the field's smallest quadratic non-residue, which yields primitive power-of-two roots without factoring p − 1, and every root is checked to be primitive. The GPU version (`src/ntt_gpu.py`) handles primes below 2⁶³: it caches its twiddle table and bit-reversal index on the device for each size, and uses `src/field_gpu.py` for exact modular arithmetic. BN254's r does not fit in int64, so it is CPU-only for now.
-- **MSM**: Naive and Straus/Shamir simultaneous double-and-add on CPU (one shared accumulator: ~254 doublings in total instead of N·254, about 3× faster than naive for 254-bit scalars); Pippenger bucket method with only the scalar window extraction on the GPU (bucket accumulation stays on the CPU). All BN254 point arithmetic uses Python's arbitrary-precision integers (254-bit coordinates).
+- **MSM**: Naive and Straus/Shamir simultaneous double-and-add on CPU (one shared accumulator: ~254 doublings in total instead of N·254, about 3× faster than naive for 254-bit scalars); Pippenger bucket method: scalars are reduced mod r and split into four 64-bit limbs, one GPU kernel extracts every window digit at once (a single device-to-host copy), and bucket accumulation plus Horner's-rule window combination (~254 doublings) stay on the CPU. All BN254 point arithmetic uses Python's arbitrary-precision integers (254-bit coordinates).
 - **GPU kernels**: Written with CuPy's `ElementwiseKernel` (CUDA C++ compiled at runtime via nvrtc). Works without the full CUDA Toolkit — only nvrtc is needed (bundled with PyTorch on Windows).
 - **Fallback**: GPU availability is decided once, at import, in `src/gpu_backend.py`. When it is unavailable, every GPU function falls back to NumPy/CPU and emits a `GpuFallbackWarning` naming the reason, so no code changes are needed on CPU-only machines.
 - **Benchmarking**: Median of 3 runs; first GPU run discarded (CuPy JIT warmup).

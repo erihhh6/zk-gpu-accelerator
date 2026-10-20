@@ -18,7 +18,7 @@ import time
 
 import numpy as np
 
-from src.curve import G, P as CURVE_P
+from src.curve import G
 from src.msm import msm_naive
 
 SIZES = [100, 500, 1000, 5000, 10_000]
@@ -63,7 +63,7 @@ def benchmark_size(n: int) -> dict:
         sc_np = np.array(scalars, dtype=np.int64)
 
         # Warmup (compiles CuPy kernels)
-        msm_pippenger_gpu(px_np[:10], py_np[:10], sc_np[:10], CURVE_P)
+        msm_pippenger_gpu(px_np[:10], py_np[:10], sc_np[:10])
 
         total_times = []
         transfer_times = []
@@ -77,7 +77,7 @@ def benchmark_size(n: int) -> dict:
             t_xfer_end = time.perf_counter()
 
             t_run_start = time.perf_counter()
-            msm_pippenger_gpu(px_np, py_np, sc_np, CURVE_P)
+            msm_pippenger_gpu(px_np, py_np, sc_np)
             t_run_end = time.perf_counter()
 
             transfer_times.append((t_xfer_end - t_xfer_start) * 1000)

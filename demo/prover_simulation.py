@@ -28,14 +28,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 
-from src.curve import G, P as CURVE_P
+from src.curve import G
 from src.msm import msm_naive
 from src.ntt import ntt as ntt_cpu, MOD as NTT_MOD
 
 try:
     import cupy as cp
     from src.ntt_gpu import ntt_gpu, _gpu_available as _ntt_gpu_ok
-    from src.msm_gpu import msm_gpu, _gpu_available as _msm_gpu_ok
+    from src.msm_gpu import msm_pippenger_gpu, _gpu_available as _msm_gpu_ok
     _gpu_available = _ntt_gpu_ok and _msm_gpu_ok
 except ImportError:
     _gpu_available = False
@@ -100,7 +100,7 @@ def simulate_prover(n_constraints: int, use_gpu: bool = False) -> dict:
             py = np.array([p.y for p in points], dtype=object)
             sc = np.array(scalars, dtype=np.uint64)
             t0 = time.perf_counter()
-            msm_gpu(px, py, sc, CURVE_P)
+            msm_pippenger_gpu(px, py, sc)
             msm_total += time.perf_counter() - t0
         else:
             t0 = time.perf_counter()

@@ -9,31 +9,30 @@ from src import msm_gpu as msm_gpu_module
 from src.curve import G, P as CURVE_P, Point
 from src.field import FIELD_MODULUS as R
 from src.msm import msm_naive, msm_double_and_add
-from src.msm_gpu import msm_gpu, msm_pippenger_gpu
-from tests.known_bugs import known_bug
+from src.msm_gpu import msm_pippenger_gpu
 
 pytestmark = pytest.mark.filterwarnings("ignore::src.gpu_backend.GpuFallbackWarning")
 
 GPU = pytest.param("gpu", marks=pytest.mark.gpu)
 FALLBACK = "fallback"
+BACKENDS = [GPU, FALLBACK]
 
 
 @pytest.fixture
 def backend(request, monkeypatch):
-    """Run msm_gpu's code on CUDA ("gpu") or force its CPU fallback ("fallback")."""
+    """Run msm_pippenger_gpu on CUDA ("gpu") or force its CPU fallback ("fallback")."""
     if request.param == FALLBACK:
         monkeypatch.setattr(msm_gpu_module, "_gpu_available", False)
     return request.param
 
 
 def pippenger(points: list[Point], scalars: list[int], window_size: int = 8) -> Point:
-    """Adapt msm_pippenger_gpu's array API to Points; (0, 0) is its identity sentinel."""
+    """Call msm_pippenger_gpu with the array layout callers use for BN254 data."""
+    # object dtype: 254-bit coordinates and scalars do not fit in int64
     px = np.array([p.x for p in points], dtype=object)
     py = np.array([p.y for p in points], dtype=object)
-    # object dtype keeps arbitrary-precision scalars intact on the way in
     sc = np.array(scalars, dtype=object)
-    x, y = msm_pippenger_gpu(px, py, sc, CURVE_P, window_size=window_size)
-    return Point.identity() if (x, y) == (0, 0) else Point(x, y)
+    return msm_pippenger_gpu(px, py, sc, window_size=window_size)
 
 
 def count_doublings(monkeypatch) -> dict[str, int]:
@@ -55,6 +54,15 @@ def msm_inputs():
     points = [G * rng.randint(1, 2**32) for _ in range(30)]
     scalars = [rng.randint(0, 2**32) for _ in range(30)]
     return points, scalars, msm_naive(points, scalars)
+
+
+@pytest.fixture(scope="module")
+def full_size_inputs():
+    """Uniform elements of F_r (~254 bits), so every 64-bit limb is populated."""
+    rng = random.Random(31)
+    points = [G * rng.randint(1, 2**32) for _ in range(12)]
+    scalars = [rng.randrange(R) for _ in range(12)]
+    return points, scalars, msm_double_and_add(points, scalars)
 
 
 # ------------------------------------------------------------------
@@ -148,18 +156,26 @@ def test_double_and_add_with_identity_points():
 
 
 # ------------------------------------------------------------------
-# Pippenger (msm_pippenger_gpu): GPU window extraction and CPU fallback
+# Pippenger (msm_pippenger_gpu): GPU digit extraction and CPU fallback
 # ------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("backend", [GPU, FALLBACK], indirect=True)
-@pytest.mark.parametrize("window_size", [3, 8, 11])  # 3 and 11 do not divide 256
+@pytest.mark.parametrize("backend", BACKENDS, indirect=True)
+@pytest.mark.parametrize("window_size", [1, 3, 8, 11])
 def test_pippenger_matches_naive(backend, window_size, msm_inputs):
     points, scalars, expected = msm_inputs
     assert pippenger(points, scalars, window_size) == expected
 
 
-@pytest.mark.parametrize("backend", [GPU, FALLBACK], indirect=True)
+@pytest.mark.parametrize("backend", BACKENDS, indirect=True)
+@pytest.mark.parametrize("window_size", [3, 5, 8])  # 3 and 5 make windows straddle 64-bit limbs
+def test_pippenger_full_size_scalars(backend, window_size, full_size_inputs):
+    """Real ZK scalars are uniform in F_r (~254 bits), filling all four limbs."""
+    points, scalars, expected = full_size_inputs
+    assert pippenger(points, scalars, window_size) == expected
+
+
+@pytest.mark.parametrize("backend", BACKENDS, indirect=True)
 def test_pippenger_bucket_edge_cases(backend):
     """P and -P in one bucket cancel to O; P and P in one bucket take the doubling branch."""
     assert pippenger([G, -G], [7, 7]) == Point.identity()
@@ -167,39 +183,25 @@ def test_pippenger_bucket_edge_cases(backend):
     assert pippenger([G, G], [0, 0]) == Point.identity()
 
 
-@pytest.mark.parametrize(
-    "backend",
-    [
-        pytest.param(
-            "gpu",
-            marks=[pytest.mark.gpu, known_bug("scalars are packed into int64 before window extraction", raises=OverflowError)],
-        ),
-        FALLBACK,
-    ],
-    indirect=True,
-)
-def test_pippenger_full_size_scalars(backend):
-    """Real ZK scalars are uniformly random elements of F_r (~254 bits), not 32-bit ints."""
-    rng = random.Random(41)
-    points = [G * k for k in (3, 5, 7, 11)]
-    scalars = [rng.randrange(R) for _ in points]
-    assert pippenger(points, scalars) == msm_naive(points, scalars)
-
-
-@pytest.mark.parametrize("backend", [GPU, FALLBACK], indirect=True)
-@known_bug("scalars are not reduced mod r: negatives and values >= 2^256 give wrong sums")
+@pytest.mark.parametrize("backend", BACKENDS, indirect=True)
 def test_pippenger_reduces_scalars_mod_r(backend):
     point = G * 3
-    for scalar in (-5, R + 7, 2**300 + 1):
+    for scalar in (-5, R, R + 7, 2**300 + 1):
         assert pippenger([point], [scalar]) == point * (scalar % R)
 
 
-@known_bug(
-    "each window is shifted by its own doubling loop (~3968 doublings for w=8) instead of Horner's ~256",
-    raises=AssertionError,
-)
-def test_pippenger_doublings_are_linear_in_scalar_bits(monkeypatch):
-    monkeypatch.setattr(msm_gpu_module, "_gpu_available", False)  # full-size scalars need the CPU path today
+@pytest.mark.parametrize("backend", BACKENDS, indirect=True)
+def test_pippenger_returns_a_point(backend):
+    """The old API returned (x, y) and used (0, 0), which is not on the curve, for infinity."""
+    assert msm_pippenger_gpu([], [], []) == Point.identity()
+    result = msm_pippenger_gpu([G.x], [G.y], [R])  # r·G = O
+    assert isinstance(result, Point) and result.is_identity()
+    assert msm_pippenger_gpu([G.x, G.x], [G.y, G.y], [2, 3]) == G * 5  # plain lists work too
+
+
+@pytest.mark.parametrize("backend", BACKENDS, indirect=True)
+def test_pippenger_doublings_are_linear_in_scalar_bits(backend, monkeypatch):
+    """Horner's rule: w·(windows - 1) = 248 doublings for w = 8, not a loop per window (3968)."""
     points = [G * k for k in (3, 5, 7, 11)]
     scalars = [2**250 + k for k in range(len(points))]
     calls = count_doublings(monkeypatch)
@@ -207,28 +209,15 @@ def test_pippenger_doublings_are_linear_in_scalar_bits(monkeypatch):
     assert calls["n"] <= 256 + len(points)
 
 
-# ------------------------------------------------------------------
-# msm_gpu (naive per-point MSM behind a GPU-shaped API)
-# ------------------------------------------------------------------
-
-
-@pytest.mark.gpu
-def test_msm_gpu_equals_cpu():
-    """msm_gpu result matches CPU MSM for N=100 random points."""
-    random.seed(23)
-    n = 100
-    scalars = [random.randint(1, 2**32) for _ in range(n)]
-    points = [G * random.randint(1, 2**32) for _ in range(n)]
-
-    cpu_result = msm_naive(points, scalars)
-
-    # BN254 coordinates are ~254-bit: keep as object dtype (Python ints)
-    points_x = np.array([p.x for p in points], dtype=object)
-    points_y = np.array([p.y for p in points], dtype=object)
-    scalars_np = np.array(scalars, dtype=np.int64)
-
-    # msm_gpu returns (x, y) as Python ints
-    gx, gy = msm_gpu(points_x, points_y, scalars_np, CURVE_P)
-    gpu_result = Point(gx, gy)
-
-    assert cpu_result == gpu_result
+def test_pippenger_validates_arguments():
+    with pytest.raises(ValueError, match="Length mismatch"):
+        msm_pippenger_gpu([G.x], [G.y], [1, 2])
+    for bad_window in (0, 17):
+        with pytest.raises(ValueError, match="window_size"):
+            msm_pippenger_gpu([G.x], [G.y], [1], window_size=bad_window)
+    with pytest.raises(TypeError, match="scalars must contain integers"):
+        msm_pippenger_gpu([G.x], [G.y], [1.5])
+    # mod was dropped and window_size is keyword-only, so the old call shape
+    # fails loudly instead of silently using P as the window size
+    with pytest.raises(TypeError):
+        msm_pippenger_gpu([G.x], [G.y], [1], CURVE_P)
