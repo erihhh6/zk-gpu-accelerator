@@ -102,7 +102,7 @@ def benchmark_size(n: int) -> dict:
 
 
 def run_bench() -> list[dict]:
-    print("=== MSM Benchmark (Shamir CPU / Pippenger+GPU) ===")
+    print("=== MSM Benchmark (naive CPU / Pippenger with GPU window extraction) ===")
     results = []
     for n in SIZES:
         print(f"  N = {n:>6} ...", end=" ", flush=True)

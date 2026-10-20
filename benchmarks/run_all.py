@@ -54,7 +54,7 @@ def print_summary(all_results: dict) -> None:
         )
 
     # MSM
-    print("\n[MSM — double-and-add CPU / parallel GPU, BN254]")
+    print("\n[MSM — naive CPU / Pippenger with GPU window extraction, BN254]")
     print(f"{'N':>8}  {'CPU ms':>10}  {'GPU ms':>10}  {'Speedup':>8}")
     for r in all_results["msm"]:
         print(

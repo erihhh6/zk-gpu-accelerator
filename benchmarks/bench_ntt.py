@@ -14,7 +14,6 @@ import json
 import os
 import statistics
 import time
-import warnings
 
 import numpy as np
 
@@ -49,8 +48,6 @@ def benchmark_size(n: int) -> dict:
     speedup: float | None = None
 
     if _gpu_available:
-        a_cp = cp.array(a_np, dtype=cp.int64)
-
         # Warmup (first run JIT-compiles CuPy kernels)
         _ = ntt_gpu(cp.array(a_np, dtype=cp.int64), MOD)
 

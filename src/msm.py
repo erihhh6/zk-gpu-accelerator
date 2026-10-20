@@ -8,10 +8,11 @@ Given vectors of elliptic curve points P₁…Pₙ and scalars s₁…sₙ, comp
 This is the dominant cost (~65% of total prover time) in Groth16 and PLONK.
 
 Two implementations are provided:
-  - msm_naive   : straightforward, each sᵢ*Pᵢ computed independently
-  - msm_double_and_add : Shamir's trick — processes all scalars bit-by-bit
-                          simultaneously, reducing doublings from N·log(s)
-                          to log(max_scalar)
+  - msm_naive          : straightforward, each sᵢ·Pᵢ computed independently
+  - msm_double_and_add : processes all scalars bit-by-bit in lockstep. It was
+                         meant to be Shamir's/Straus's trick but still doubles
+                         every point at every bit, so it is no faster than
+                         msm_naive (tracked as a known bug in tests/test_msm.py)
 """
 
 from __future__ import annotations
@@ -43,11 +44,12 @@ def msm_naive(points: list[Point], scalars: list[int]) -> Point:
 
 def msm_double_and_add(points: list[Point], scalars: list[int]) -> Point:
     """
-    MSM with Shamir's simultaneous double-and-add trick.
+    Bit-serial MSM: all scalars are processed bit-by-bit in lockstep.
 
-    All scalars are processed bit-by-bit in lockstep, so the number of
-    point doublings is reduced to log₂(max_scalar) ≈ 254 for BN254 scalars,
-    regardless of N. The savings grow with N.
+    This is NOT Shamir's/Straus's trick. Straus keeps a single accumulator
+    and doubles it once per bit (≈ log₂(max scalar) doublings in total,
+    independent of N). This loop instead doubles every tmp[i] at every bit,
+    so it performs N · bits doublings, the same as msm_naive.
 
     Algorithm
     ---------
@@ -112,7 +114,6 @@ if __name__ == "__main__":
     # Both implementations agree on N=10 random points
     import random
     random.seed(99)
-    from src.curve import P as CURVE_P
 
     n = 10
     scalars_rand = [random.randint(1, 2**32) for _ in range(n)]

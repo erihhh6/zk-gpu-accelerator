@@ -19,8 +19,13 @@ We use MOD = 998 244 353 = 119 · 2^23 + 1 (a.k.a. "the competitive-programming
 NTT prime"). Its factorisation p - 1 = 2^23 · 7 · 17 means the field supports
 NTT for any power-of-2 length N ≤ 2^23.
 
-Note: BN254's scalar field modulus r is NOT NTT-friendly for power-of-2 sizes
-used in practice, so we use MOD = 998244353 throughout this module.
+BN254's scalar field r is NTT-friendly too: r - 1 is divisible by 2^28, so it
+supports power-of-2 sizes up to 2^28 (which is why Groth16/PLONK over BN254
+use it). This module cannot use r yet: roots are derived from the hardcoded
+PRIMITIVE_ROOT = 3, which is a quadratic residue mod r, so ntt(a, r) and
+polynomial_mul(..., r) silently return wrong results. The same applies to any
+modulus for which 3 is a quadratic residue (tracked as a known bug in
+tests/test_ntt.py).
 
 Applications in ZK
 ------------------
@@ -32,46 +37,12 @@ is done in O(N log N) via NTT instead of O(N²) naive convolution.
 from __future__ import annotations
 
 MOD: int = 998_244_353  # NTT-friendly prime: 119 * 2^23 + 1
-PRIMITIVE_ROOT: int = 3  # Primitive root of F_{998244353}
+PRIMITIVE_ROOT: int = 3  # Primitive root of F_998244353 only; not valid for every modulus
 
 
 # ------------------------------------------------------------------
 # Root computation helpers
 # ------------------------------------------------------------------
-
-
-def find_primitive_root(mod: int) -> int:
-    """
-    Find a primitive root (generator) of the multiplicative group F_mod*.
-
-    A primitive root g satisfies ord(g) = mod - 1, i.e. g generates the
-    entire group. We test small candidates against the prime factors of
-    mod - 1.
-    """
-    if mod == 2:
-        return 1
-
-    phi = mod - 1  # mod is assumed prime, so φ(mod) = mod - 1
-
-    # Factorise phi (trial division; fine for moderate-sized primes)
-    factors: list[int] = []
-    n = phi
-    d = 2
-    while d * d <= n:
-        if n % d == 0:
-            factors.append(d)
-            while n % d == 0:
-                n //= d
-        d += 1
-    if n > 1:
-        factors.append(n)
-
-    # Check candidates
-    for g in range(2, mod):
-        if all(pow(g, phi // f, mod) != 1 for f in factors):
-            return g
-
-    raise ValueError(f"Could not find primitive root for mod={mod}")
 
 
 def get_ntt_root(n: int, mod: int, primitive_root: int = PRIMITIVE_ROOT) -> int:
@@ -80,7 +51,9 @@ def get_ntt_root(n: int, mod: int, primitive_root: int = PRIMITIVE_ROOT) -> int:
 
     Preconditions:
       - n must be a power of 2
-      - (mod - 1) must be divisible by n
+      - (mod - 1) must be divisible by n (checked)
+      - primitive_root must be a quadratic non-residue mod *mod* (NOT checked):
+        otherwise ω^(n/2) = 1 instead of -1 and ω is not a primitive root
     """
     if (mod - 1) % n != 0:
         raise ValueError(
@@ -113,60 +86,6 @@ def _bit_reverse_copy(a: list[int]) -> list[int]:
 
 
 def ntt(a: list[int], mod: int = MOD, invert: bool = False) -> list[int]:
-    """
-    Cooley-Tukey iterative NTT.
-
-    Parameters
-    ----------
-    a      : input coefficient vector; length must be a power of 2
-    mod    : field modulus (default 998244353)
-    invert : if True, compute the inverse NTT (INTT)
-
-    Returns
-    -------
-    list[int] : transformed vector (same length as input)
-    """
-    n = len(a)
-    if n == 0:
-        return []
-    if n & (n - 1):
-        raise ValueError(f"NTT length must be a power of 2, got {n}")
-    if n == 1:
-        return [a[0] % mod]
-
-    a = _bit_reverse_copy(a)
-
-    # Build up the transform butterfly-by-butterfly
-    length = 2
-    while length <= n:
-        # ω of order *length* in F_mod
-        w_len = get_ntt_root(length, mod)
-        if invert:
-            w_len = pow(w_len, mod - 2, mod)  # w_len^(-1) mod mod
-
-        for i in range(0, n, length):
-            w = 1
-            half = length // 2
-            for j in range(half):
-                u = a[i + j]
-                v = (a[i + j + half] * w) % mod
-                a[i + j] = (u + v) % mod
-                a[i + j + half] = (u - v) % mod
-            w = (w * w_len) % mod  # not used after inner loop, harmless
-
-        length <<= 1
-
-    if invert:
-        n_inv = pow(n, mod - 2, mod)
-        a = [(x * n_inv) % mod for x in a]
-
-    return a
-
-
-# Fix: the butterfly's twiddle factor update was inside the wrong scope.
-# Re-implement cleanly:
-
-def ntt(a: list[int], mod: int = MOD, invert: bool = False) -> list[int]:  # noqa: F811
     """
     Cooley-Tukey iterative NTT.
 

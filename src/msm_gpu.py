@@ -1,27 +1,26 @@
 """
-src/msm_gpu.py — Multi-Scalar Multiplication on GPU (CuPy).
+src/msm_gpu.py — Multi-Scalar Multiplication behind a GPU-shaped array API.
 
-Strategy
---------
-Pippenger's algorithm with GPU-accelerated bucket assignment:
+What runs where
+---------------
+msm_pippenger_gpu — Pippenger's bucket method:
+  1. Split each scalar into windows of *window_size* bits.
+  2. GPU (CuPy): extract one window's value for all N scalars at once, then
+     copy the values back to the host. This is the only GPU work.
+  3. CPU: add each point into its bucket and combine the buckets with the
+     running-sum trick. All BN254 point arithmetic uses Python's
+     arbitrary-precision ints; there is no CUDA curve arithmetic yet.
+  4. CPU: shift each window's sum into place and accumulate.
+  The speedup over msm_naive comes from Pippenger doing far fewer point
+  additions, not from the GPU: the CPU fallback path is no slower.
 
-1. Split each scalar into windows of *window_size* bits.
-2. For each window, assign point indices to buckets on the GPU
-   (extract the window value using CuPy vectorized ops).
-3. Accumulate bucket sums on CPU (point arithmetic requires 254-bit integers
-   which are most efficiently handled by Python's arbitrary-precision ints).
-4. Sum bucket contributions with the standard Pippenger accumulation.
+msm_gpu — naive per-point MSM, entirely on the CPU (no GPU work at all);
+  kept as a reference behind the same array API.
 
-The parallel scalar decomposition on GPU is the dominant data-parallel
-step for large N; BN254 point arithmetic stays on CPU using Python's
-native bignum arithmetic.
-
-A simpler naive parallel implementation (msm_gpu) is also provided:
-each point is individually computed as scalar_mul on CPU in a single
-loop, but with data layout prep on GPU. For genuine MSM acceleration on
-BN254, the Pippenger function is recommended for N ≥ 1000.
-
-Falls back to CPU msm_naive automatically when CUDA is not available.
+Known limitations (tracked as known bugs in tests/test_msm.py): on the GPU
+path scalars must fit in int64, so real 254-bit scalars raise OverflowError;
+scalars are not reduced mod r; and each window is shifted with its own
+doubling loop rather than Horner's rule.
 """
 
 from __future__ import annotations
@@ -44,19 +43,16 @@ def msm_gpu(
     mod: int,
 ) -> tuple[int, int]:
     """
-    MSM on GPU (naive parallel, CPU point arithmetic).
+    Naive MSM on the CPU, behind the same array API as msm_pippenger_gpu.
 
-    Each scalar × point is computed independently on CPU; data layout
-    and scalar decomposition leverage GPU where applicable.
-    For the BN254 254-bit coordinate field, point addition is done in
-    Python's arbitrary-precision arithmetic (most practical without a
-    full CUDA 254-bit arithmetic library).
+    Despite the name, no GPU work happens: each sᵢ·Pᵢ is computed by
+    double-and-add with Python ints and the products are summed.
 
     Parameters
     ----------
-    points_x, points_y : np.ndarray — curve point coordinates (Python ints)
+    points_x, points_y : np.ndarray (dtype=object) — affine coordinates as Python ints
     scalars            : np.ndarray — scalar multipliers
-    mod                : curve base field prime
+    mod                : unused; arithmetic always uses BN254's P from src.curve
 
     Returns
     -------
@@ -66,16 +62,9 @@ def msm_gpu(
     if n == 0:
         return 0, 0
 
-    if not _gpu_available:
-        warn_cpu_fallback("msm_gpu", "the CPU MSM")
-
-    # Compute partial results: scalar[i] * Point[i], accumulated
-    from src.curve import Point as _Point
-
-    result = _Point.identity()
+    result = Point.identity()
     for x, y, s in zip(points_x.tolist(), points_y.tolist(), scalars.tolist()):
-        pt = _Point(int(x), int(y))
-        result = result + pt * int(s)
+        result = result + Point(int(x), int(y)) * int(s)
 
     rx = result.x if result.x is not None else 0
     ry = result.y if result.y is not None else 0
@@ -90,21 +79,28 @@ def msm_pippenger_gpu(
     window_size: int = 8,
 ) -> tuple[int, int]:
     """
-    Pippenger MSM with GPU-accelerated scalar window extraction.
+    Pippenger MSM; only the scalar window extraction runs on the GPU.
 
     For each window position:
-      - GPU: extract window value for all N scalars simultaneously (CuPy)
-      - CPU: assign each point to its bucket and accumulate bucket sums
+      - GPU: extract the window value for all N scalars at once (CuPy), then
+        copy the values to the host
+      - CPU: add each point into its bucket and combine the buckets
 
-    The GPU step scales O(N) for scalar decomposition; the CPU bucket
-    accumulation is O(2^w + N) per window where w = window_size.
+    Pippenger needs O(N + 2^w) point additions per window instead of the
+    O(N · bits) of msm_naive. That reduction, not the GPU step, is where the
+    speedup comes from.
 
-    For N ≥ 1000 and window_size = 8 this is significantly faster than
-    msm_naive because scalar decomposition is vectorized on GPU and the
-    number of point additions is reduced from O(N·bits) to O(N + 2^w·bits/w).
+    Parameters
+    ----------
+    points_x, points_y : np.ndarray (dtype=object) — affine coordinates as Python ints
+    scalars            : np.ndarray — scalars; must fit in int64 on the GPU path
+    mod                : unused; arithmetic always uses BN254's P from src.curve
+    window_size        : bits per window (w); each window has 2^w buckets
+
+    Returns
+    -------
+    (x, y) of the result; (0, 0) denotes the point at infinity.
     """
-    from src.curve import Point as _Point
-
     n = len(scalars)
     if n == 0:
         return 0, 0
@@ -115,7 +111,7 @@ def msm_pippenger_gpu(
 
     # Scalars as Python ints for arbitrary-precision windowing
     scalars_int = [int(s) for s in scalars.tolist()]
-    points = [_Point(int(x), int(y)) for x, y in zip(points_x.tolist(), points_y.tolist())]
+    points = [Point(int(x), int(y)) for x, y in zip(points_x.tolist(), points_y.tolist())]
 
     if _gpu_available:
         # GPU-accelerated scalar window extraction
@@ -123,7 +119,7 @@ def msm_pippenger_gpu(
     else:
         warn_cpu_fallback("msm_pippenger_gpu", "CPU scalar window extraction")
 
-    final_result = _Point.identity()
+    final_result = Point.identity()
 
     for win in range(num_windows):
         shift = win * window_size
@@ -136,15 +132,15 @@ def msm_pippenger_gpu(
             win_vals = [(s >> shift) & mask for s in scalars_int]
 
         # CPU bucket accumulation
-        buckets: list[_Point] = [_Point.identity()] * bucket_count
+        buckets: list[Point] = [Point.identity()] * bucket_count
         for i, v in enumerate(win_vals):
             if v == 0:
                 continue
             buckets[v] = buckets[v] + points[i]
 
         # Pippenger bucket sum: suffix-sum trick
-        running = _Point.identity()
-        accumulated = _Point.identity()
+        running = Point.identity()
+        accumulated = Point.identity()
         for k in range(bucket_count - 1, 0, -1):
             running = running + buckets[k]
             accumulated = accumulated + running

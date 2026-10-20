@@ -20,7 +20,7 @@ Accelerates the two most expensive operations in ZK proof generation using NVIDI
 | Operation | ZK Usage | CPU Algorithm | GPU Algorithm | Peak Speedup |
 |---|---|---|---|---|
 | **NTT** | Polynomial multiplication (PLONK, Groth16) | Cooley-Tukey iterative | Parallel butterfly (CuPy kernel) | **20x** |
-| **MSM** | Linear combinations of EC points (Groth16) | Shamir's double-and-add | Pippenger + GPU scalar decomposition | **12x** |
+| **MSM** | Linear combinations of EC points (Groth16) | Naive (per-point double-and-add) | Pippenger (CPU buckets) + GPU window extraction | **12x** |
 | **Field** | Modular arithmetic building block | NumPy vectorized | CuPy ElementwiseKernel | **45x** |
 
 Tested on: **NVIDIA GeForce RTX 5050 Laptop GPU** (Compute Capability 12.0, 8 GB VRAM)
@@ -80,7 +80,7 @@ Both are *embarrassingly parallel* → ideal for GPU acceleration.
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.11+
 - NVIDIA GPU with CUDA support
 - PyTorch (provides `nvrtc64_*.dll` on Windows, needed for CuPy kernel compilation)
 
@@ -93,7 +93,7 @@ Look for `CUDA Version: XX.Y` in the top-right of the output.
 ### Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/zk-gpu-accelerator.git
+git clone https://github.com/erihhh6/zk-gpu-accelerator.git
 cd zk-gpu-accelerator
 pip install -r requirements.txt
 ```
@@ -262,8 +262,8 @@ zk-gpu-accelerator/
 │   ├── curve.py       # BN254 G1 point operations (affine coordinates)
 │   ├── ntt.py         # Cooley-Tukey NTT CPU (MOD = 998244353)
 │   ├── ntt_gpu.py     # NTT GPU — parallel butterfly CuPy kernel
-│   ├── msm.py         # MSM CPU — naive + Shamir's trick
-│   └── msm_gpu.py     # MSM GPU — Pippenger + GPU scalar decomposition
+│   ├── msm.py         # MSM CPU — naive + bit-serial double-and-add
+│   └── msm_gpu.py     # MSM — Pippenger (CPU buckets) + GPU window extraction
 ├── benchmarks/
 │   ├── bench_field.py
 │   ├── bench_ntt.py
@@ -291,8 +291,8 @@ zk-gpu-accelerator/
 ## Implementation Notes
 
 - **Field**: BN254 scalar field (r ≈ 2²⁵⁴). All Fp ops use Python's built-in `pow()` for fast modular exponentiation. GPU benchmark uses `MOD = 998244353` (int64-safe).
-- **NTT**: Cooley-Tukey iterative with bit-reversal permutation. Modulus `998244353 = 119·2²³ + 1` (NTT-friendly prime supporting up to N = 2²³). GPU butterfly uses CuPy `ElementwiseKernel`.
-- **MSM**: Shamir's simultaneous double-and-add on CPU; Pippenger bucket method with GPU-accelerated scalar window extraction on GPU. BN254 point arithmetic uses Python's arbitrary-precision integers (254-bit coordinates).
+- **NTT**: Cooley-Tukey iterative with bit-reversal permutation. Modulus `998244353 = 119·2²³ + 1` (NTT-friendly prime supporting up to N = 2²³). GPU butterfly uses CuPy `ElementwiseKernel`. BN254's scalar field is NTT-friendly too (2-adicity 28, sizes up to 2²⁸), but roots of unity are currently derived from a hardcoded primitive root 3, which is invalid for it, so the NTT is only correct for moduli like 998244353 for now.
+- **MSM**: Naive and bit-serial double-and-add on CPU; Pippenger bucket method with only the scalar window extraction on the GPU (bucket accumulation stays on the CPU). All BN254 point arithmetic uses Python's arbitrary-precision integers (254-bit coordinates).
 - **GPU kernels**: Written with CuPy's `ElementwiseKernel` (CUDA C++ compiled at runtime via nvrtc). Works without the full CUDA Toolkit — only nvrtc is needed (bundled with PyTorch on Windows).
 - **Fallback**: GPU availability is decided once, at import, in `src/gpu_backend.py`. When it is unavailable, every GPU function falls back to NumPy/CPU and emits a `GpuFallbackWarning` naming the reason, so no code changes are needed on CPU-only machines.
 - **Benchmarking**: Median of 3 runs; first GPU run discarded (CuPy JIT warmup).

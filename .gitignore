@@ -21,12 +21,6 @@ env/
 .coverage
 htmlcov/
 
-# Numba / CuPy JIT cache
-.nbi/
-.nbc/
-numba_cache/
-__pycache__/
-
 # Results (committed so README charts display on GitHub)
 # results/*.json and results/*.png are intentionally tracked
 
@@ -47,5 +41,4 @@ Thumbs.db
 desktop.ini
 
 # Distribution
-*.egg-info/
 site/

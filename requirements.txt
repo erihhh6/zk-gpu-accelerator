@@ -1,14 +1,14 @@
 # ZK GPU Accelerator — Python dependencies
 #
 # IMPORTANT: CuPy version must match your CUDA installation.
-# Check your CUDA version with: nvcc --version
+# Check your CUDA version with: nvidia-smi   (top-right "CUDA Version")
 #   CUDA 12.x → cupy-cuda12x   (default below)
 #   CUDA 11.x → cupy-cuda11x
 #   No GPU    → comment out cupy line; GPU modules will fall back to NumPy automatically
 #
+# Verify the GPU setup afterwards with: python scripts/check_gpu.py
+#
 cupy-cuda12x>=13.0
-numba>=0.59
 numpy>=1.26
 matplotlib>=3.8
-tqdm>=4.66
 pytest>=8.0

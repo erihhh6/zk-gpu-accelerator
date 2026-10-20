@@ -2,9 +2,8 @@
 src/ntt_gpu.py — Number Theoretic Transform on GPU (CuPy).
 
 Implements the Cooley-Tukey NTT using CuPy's vectorized array operations.
-Each butterfly stage is computed entirely on the GPU using CuPy indexing
-and broadcasting — no Numba or nvvm required, only CuPy + nvrtc (provided
-by PyTorch's bundled nvrtc64*.dll on Windows).
+Each butterfly stage runs on the GPU using CuPy indexing and broadcasting;
+only CuPy and nvrtc are needed (src.gpu_backend explains how nvrtc is found).
 
 Algorithm (per stage)
 ---------------------
@@ -19,6 +18,15 @@ For stage with half = length // 2:
 
 CuPy broadcasts wk (shape: half,) across groups (shape: n//length, half)
 so step 4 is a single vectorized modular multiply on the GPU.
+
+Limitations
+-----------
+- Same root selection as src.ntt (PRIMITIVE_ROOT = 3), so it is only correct
+  for moduli where 3 is a quadratic non-residue, such as 998244353.
+- Elements are int64 and products are formed in int64, so mod must be
+  below ~3.03 × 10⁹ (≈ 2^31.5).
+- Twiddle factors are rebuilt in a Python loop on every call; at N = 2^20
+  this host-side loop is over half of the total runtime.
 """
 
 from __future__ import annotations
@@ -28,6 +36,7 @@ import math
 import numpy as np
 
 from src.gpu_backend import GPU_AVAILABLE as _gpu_available, cp, warn_cpu_fallback
+from src.ntt import PRIMITIVE_ROOT, ntt as ntt_cpu
 
 
 # ------------------------------------------------------------------
@@ -43,8 +52,6 @@ if _gpu_available:
         "c = a * b % mod",
         "ntt_modmul",
     )
-
-_BLOCK = 256
 
 
 def _modmul_gpu(a: "cp.ndarray", b: "cp.ndarray", mod: int) -> "cp.ndarray":
@@ -76,8 +83,6 @@ def _bit_reverse_permute_gpu(arr: "cp.ndarray") -> "cp.ndarray":
 # Public GPU NTT
 # ------------------------------------------------------------------
 
-_PRIMITIVE_ROOT = 3  # primitive root of 998244353
-
 
 def ntt_gpu(
     a: "cp.ndarray",
@@ -90,16 +95,16 @@ def ntt_gpu(
     Parameters
     ----------
     a      : cp.ndarray of dtype int64, length a power of 2
-    mod    : NTT-friendly prime (recommended: 998244353)
+    mod    : NTT-friendly prime below ~2^31.5 for which 3 is a quadratic
+             non-residue (see module Limitations); 998244353 qualifies
     invert : if True, compute the inverse NTT
 
     Returns
     -------
-    cp.ndarray int64 of the same length
+    cp.ndarray int64 of the same length (np.ndarray on the CPU fallback)
     """
     if not _gpu_available:
         warn_cpu_fallback("ntt_gpu", "the CPU NTT")
-        from src.ntt import ntt as ntt_cpu
         a_list = a.tolist() if hasattr(a, "tolist") else list(a)
         result = ntt_cpu(a_list, mod, invert)
         return np.array(result, dtype=np.int64)  # type: ignore[return-value]
@@ -120,7 +125,7 @@ def ntt_gpu(
         half = length >> 1
 
         # Primitive root of order *length*
-        w = pow(_PRIMITIVE_ROOT, (mod - 1) // length, mod)
+        w = pow(PRIMITIVE_ROOT, (mod - 1) // length, mod)
         if invert:
             w = pow(w, mod - 2, mod)
 
@@ -154,20 +159,6 @@ def ntt_gpu(
     return arr
 
 
-def ntt_gpu_cupy(a: "cp.ndarray", mod: int) -> "cp.ndarray":
-    """
-    Approximate NTT demo using cupy.fft (operates over ℂ, not F_p).
-
-    NOT field-correct — provided only as GPU FFT throughput reference.
-    Use ntt_gpu() for correct NTT results.
-    """
-    if not _gpu_available:
-        warn_cpu_fallback("ntt_gpu_cupy", "numpy.fft")
-        a_np = np.asarray(a) if not isinstance(a, np.ndarray) else a
-        return np.fft.fft(a_np.astype(np.complex128))  # type: ignore[return-value]
-    return cp.fft.fft(a.astype(cp.complex128))
-
-
 # ------------------------------------------------------------------
 # Smoke test / benchmark
 # ------------------------------------------------------------------
@@ -177,7 +168,7 @@ if __name__ == "__main__":
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
     import time
     import statistics
-    from src.ntt import ntt as ntt_cpu, MOD
+    from src.ntt import MOD
 
     print("=== ntt_gpu.py benchmark ===")
     SIZES = [2**k for k in [16, 18, 20]]

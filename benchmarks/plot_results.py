@@ -64,7 +64,7 @@ def plot_speedup(all_results: dict, out_dir: str) -> None:
 
     datasets = [
         ("ntt", "NTT (Cooley-Tukey)", axes[0]),
-        ("msm", "MSM (double-and-add)", axes[1]),
+        ("msm", "MSM (naive vs Pippenger)", axes[1]),
     ]
 
     for key, title, ax in datasets:

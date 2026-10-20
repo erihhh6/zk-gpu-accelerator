@@ -3,13 +3,14 @@ zk-gpu-accelerator — GPU-accelerated ZK proof primitives (NTT and MSM).
 
 Submodules
 ----------
+gpu_backend : one-time CUDA/CuPy detection; records why the GPU is unavailable
 field       : Finite field arithmetic (CPU baseline) over BN254 scalar field
-field_gpu   : GPU-accelerated field arithmetic (CuPy + Numba)
+field_gpu   : Batch modular arithmetic on GPU (CuPy ElementwiseKernel, int64 moduli)
 curve       : BN254 elliptic curve point operations (affine coordinates)
 ntt         : Number Theoretic Transform — Cooley-Tukey CPU implementation
-ntt_gpu     : NTT on GPU via Numba CUDA butterfly kernels
-msm         : Multi-Scalar Multiplication on CPU (naive + Shamir's trick)
-msm_gpu     : MSM on GPU (parallel scalar-mul + Pippenger)
+ntt_gpu     : NTT on GPU via vectorized CuPy butterflies
+msm         : Multi-Scalar Multiplication on CPU (naive + bit-serial)
+msm_gpu     : Pippenger MSM with GPU scalar-window extraction (point math on CPU)
 """
 
 from src.field import Fp, FIELD_MODULUS, batch_mul, batch_add

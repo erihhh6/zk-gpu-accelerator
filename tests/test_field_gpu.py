@@ -74,7 +74,7 @@ def test_batch_pow_matches_python(backend, exp):
 
 
 @pytest.mark.parametrize("backend", [GPU, FALLBACK], indirect=True)
-@known_bug("int64 a * b overflows once mod > ~2^31.5; the docstring promises mod < 2^63", raises=AssertionError)
+@known_bug("int64 a * b overflows once mod > ~2^31.5 and returns wrong values silently", raises=AssertionError)
 def test_batch_mul_large_modulus(backend):
     mod = 2**61 - 1  # Mersenne prime: (mod-1)*(mod-2) needs ~122 bits
     got = field_gpu.gpu_batch_mul(as_input(backend, [mod - 1]), as_input(backend, [mod - 2]), mod)

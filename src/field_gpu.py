@@ -9,12 +9,15 @@ every function here warns with the reason and falls back to NumPy.
 
 Limitations
 -----------
-- Array elements are int64. This means the modulus must satisfy:
-    mod^2 < 2^63 - 1  →  mod < ~3.03 × 10⁹  (safe for NTT mod = 998244353)
-  For larger moduli the kernel uses __int128 intermediate arithmetic via
-  a RawKernel with the explicit cast `(__int128)a * b`.
-- BN254 field modulus r ≈ 2^254 cannot be stored in int64; the benchmark
-  uses MOD_BENCH = 998244353 for GPU throughput measurements.
+- Elements are int64 and the kernels compute ``a * b % mod`` directly in
+  int64, so the product of two reduced inputs must fit: mod < ~3.03 × 10⁹
+  (≈ 2^31.5). The NTT modulus 998244353 is safe. Larger moduli overflow and
+  return wrong values *silently*; there is no 128-bit path yet.
+- Inputs must already be reduced into [0, mod). CUDA's % keeps the sign of
+  the dividend, so negative inputs give negative outputs on the GPU (the
+  NumPy fallback happens to reduce them correctly).
+- BN254's moduli (~2^254) cannot be stored in int64 at all; the benchmark
+  uses 998244353 for GPU throughput measurements.
 """
 
 from __future__ import annotations
@@ -51,19 +54,16 @@ if _gpu_available:
 # Public GPU API
 # ------------------------------------------------------------------
 
-_BLOCK = 256
-
 
 def gpu_batch_mul(a: "cp.ndarray", b: "cp.ndarray", mod: int) -> "cp.ndarray":
     """
     Element-wise modular multiplication on GPU: result[i] = (a[i] * b[i]) % mod.
 
-    Uses 128-bit intermediate arithmetic so it is correct for any mod < 2^63.
-
     Parameters
     ----------
-    a, b : cp.ndarray of dtype int64
-    mod  : prime field modulus (must fit in int64, i.e. < 2^63)
+    a, b : cp.ndarray of dtype int64, elements in [0, mod)
+    mod  : prime modulus below ~3.03 × 10⁹; larger moduli overflow int64
+           silently (see module Limitations)
     """
     if not _gpu_available:
         warn_cpu_fallback("gpu_batch_mul", "NumPy")
@@ -92,6 +92,8 @@ def gpu_batch_pow(bases: "cp.ndarray", exp: int, mod: int) -> "cp.ndarray":
     Element-wise modular exponentiation: result[i] = bases[i]^exp % mod.
 
     Uses binary exponentiation via successive squarings in CuPy (all GPU).
+    *exp* must be non-negative on the GPU path: a negative exponent currently
+    returns 1, while the CPU fallback returns the inverse power.
     """
     if not _gpu_available:
         warn_cpu_fallback("gpu_batch_pow", "Python pow()")
