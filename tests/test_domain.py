@@ -137,7 +137,8 @@ def test_groth16_quotient_via_coset_fft():
 
     z_inv = pow(d.vanishing_eval(d.coset_offset), -1, R)
     numerator_on_coset = [
-        (x * y - z) * z_inv % R for x, y, z in zip(d.coset_fft(a), d.coset_fft(b), d.coset_fft(c), strict=True)
+        (x * y - z) * z_inv % R
+        for x, y, z in zip(d.coset_fft(a), d.coset_fft(b), d.coset_fft(c), strict=True)
     ]
     h = d.coset_ifft(numerator_on_coset)
 
