@@ -7,7 +7,6 @@ import pytest
 
 from zkgpu.curve import G, P, Point, scalar_mul
 from zkgpu.field import FIELD_MODULUS as R  # BN254 G1 is a cyclic group of prime order r
-from tests.known_bugs import known_bug
 
 O = Point.identity()
 
@@ -97,23 +96,38 @@ def test_hash_is_consistent_with_equality():
 
 
 # ------------------------------------------------------------------
-# Known bugs
+# Validation and immutability
 # ------------------------------------------------------------------
 
 
-@known_bug("Point() accepts coordinates that are not on the curve", raises=pytest.fail.Exception)
 def test_rejects_points_off_the_curve():
-    with pytest.raises(ValueError):
+    """(1, 3) lies on y² = x³ + 8, not BN254: computing with it is an invalid-curve attack."""
+    with pytest.raises(ValueError, match="not on the BN254 curve"):
         Point(1, 3)
 
 
-@known_bug("coordinates are not reduced mod P, so equal points compare unequal", raises=AssertionError)
 def test_coordinates_are_canonical():
     assert Point(1, 2 + P) == G
+    assert Point(1 - P, 2 - P) == G  # negative representatives reduce too
+    assert hash(Point(1, 2 + P)) == hash(G)
+    assert len({G, Point(1, 2 + P)}) == 1
 
 
-@known_bug("Point is a mutable dataclass that defines __hash__", raises=pytest.fail.Exception)
 def test_points_are_immutable():
     point = Point(1, 2)  # never mutate the shared generator G
     with pytest.raises(dataclasses.FrozenInstanceError):
         point.x = 5
+
+
+def test_rejects_malformed_coordinates():
+    with pytest.raises(ValueError, match="identity"):
+        Point(1, None)
+    with pytest.raises(TypeError):
+        Point(1.0, 2.0)  # floats would silently lose precision at 254 bits
+
+
+def test_arithmetic_rejects_unsupported_operands():
+    with pytest.raises(TypeError):
+        G + 1
+    with pytest.raises(TypeError):
+        G * 2.0

@@ -1,8 +1,10 @@
 """tests/test_field.py — Correctness tests for zkgpu/field.py"""
 
+import copy
+import pickle
+
 import pytest
 from zkgpu.field import Fp, FIELD_MODULUS, batch_mul, batch_add
-from tests.known_bugs import known_bug
 
 
 # ------------------------------------------------------------------
@@ -70,12 +72,43 @@ def test_fp_repr():
     assert "Fp(" in repr(Fp(42))
 
 
-@known_bug("Fp arithmetic with plain ints raises AttributeError", raises=AttributeError)
 def test_fp_interoperates_with_int():
     assert Fp(3) + 4 == Fp(7)
     assert 4 + Fp(3) == Fp(7)
     assert Fp(3) * 2 == Fp(6)
+    assert 2 * Fp(3) == Fp(6)
+    assert Fp(10) - 3 == Fp(7)
     assert 10 - Fp(3) == Fp(7)
+    assert Fp(10) / 2 == Fp(5)
+    assert 1 / Fp(2) == Fp(2).inv()
+    assert Fp(0) - 1 == FIELD_MODULUS - 1  # ints are reduced like any other operand
+
+
+def test_fp_negative_exponent_inverts():
+    assert Fp(5) ** -1 == Fp(5).inv()
+    assert Fp(5) ** -2 * 25 == 1
+    with pytest.raises(ZeroDivisionError):
+        Fp(0) ** -1  # same error as Fp(0).inv()
+
+
+def test_fp_is_immutable_but_copyable():
+    a = Fp(5)
+    with pytest.raises(AttributeError):
+        a.value = 6
+    with pytest.raises(AttributeError):
+        del a.value
+    assert copy.deepcopy(a) == a
+    assert pickle.loads(pickle.dumps(a)) == a
+
+
+def test_fp_rejects_non_integers():
+    with pytest.raises(TypeError):
+        Fp(1.5)  # would otherwise be truncated to 1
+    with pytest.raises(TypeError):
+        Fp(3) + 1.5
+    with pytest.raises(TypeError):
+        Fp(3) ** 0.5
+    assert Fp(Fp(7)) == Fp(7)
 
 
 # ------------------------------------------------------------------

@@ -10,10 +10,17 @@ This module implements:
   - Point addition and doubling in affine coordinates
   - Scalar multiplication via double-and-add
   - The standard generator point G = (1, 2)
+
+Points are immutable values and are validated on construction: coordinates
+are reduced into [0, P) and must satisfy the curve equation. Rejecting
+off-curve input matters for security, not just tidiness: the addition
+formulas never use B, so an off-curve "point" silently computes on a
+different curve, which is the basis of invalid-curve attacks.
 """
 
 from __future__ import annotations
 
+import operator
 from dataclasses import dataclass
 
 # BN254 base field prime (field of definition of the curve)
@@ -33,15 +40,35 @@ def _modinv(a: int, m: int) -> int:
     return pow(a, m - 2, m)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class Point:
     """
     Affine point on the BN254 G1 curve.
     The point at infinity (identity element) is represented as (None, None).
+
+    Immutable: frozen, because points are hashed and shared (G, bucket
+    entries in Pippenger), so mutating one would corrupt every holder.
+
+    Raises
+    ------
+    ValueError : if exactly one coordinate is None, or (x, y) is not on the curve
+    TypeError  : if a coordinate is not an integer
     """
 
     x: int | None
     y: int | None
+
+    def __post_init__(self) -> None:
+        if self.x is None and self.y is None:
+            return
+        if self.x is None or self.y is None:
+            raise ValueError(f"only the identity has None coordinates, got ({self.x}, {self.y})")
+        # Canonical coordinates in [0, P), so equal points compare and hash equal
+        # (frozen dataclasses must assign through object.__setattr__)
+        object.__setattr__(self, "x", operator.index(self.x) % P)
+        object.__setattr__(self, "y", operator.index(self.y) % P)
+        if not self.is_on_curve():
+            raise ValueError(f"({self.x}, {self.y}) is not on the BN254 curve y^2 = x^3 + 3")
 
     # ------------------------------------------------------------------
     # Constructors / predicates
@@ -70,6 +97,8 @@ class Point:
 
     def __add__(self, other: "Point") -> "Point":
         """Elliptic curve point addition (affine coordinates)."""
+        if not isinstance(other, Point):
+            return NotImplemented
         if self.is_identity():
             return other
         if other.is_identity():
@@ -103,11 +132,15 @@ class Point:
 
     def __mul__(self, scalar: int) -> "Point":
         """Scalar multiplication via double-and-add: O(log scalar)."""
+        try:
+            scalar = operator.index(scalar)  # rejects floats instead of truncating
+        except TypeError:
+            return NotImplemented
         if scalar < 0:
             # -k * P = k * (-P)
             return (-self) * (-scalar)
         result = Point.identity()
-        addend = Point(self.x, self.y)
+        addend = self  # safe to share: points are immutable
         while scalar:
             if scalar & 1:
                 result = result + addend
@@ -125,16 +158,9 @@ class Point:
         return Point(self.x, (-self.y) % P)
 
     # ------------------------------------------------------------------
-    # Comparison and representation
+    # Representation (__eq__ and __hash__ come from the frozen dataclass and
+    # compare the canonical (x, y) pair)
     # ------------------------------------------------------------------
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, Point):
-            return self.x == other.x and self.y == other.y
-        return NotImplemented
-
-    def __hash__(self) -> int:
-        return hash((self.x, self.y))
 
     def __repr__(self) -> str:
         if self.is_identity():

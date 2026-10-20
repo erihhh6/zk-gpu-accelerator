@@ -217,6 +217,9 @@ def test_pippenger_validates_arguments():
             msm_pippenger_gpu([G.x], [G.y], [1], window_size=bad_window)
     with pytest.raises(TypeError, match="scalars must contain integers"):
         msm_pippenger_gpu([G.x], [G.y], [1.5])
+    # Caller-supplied coordinates are validated: off-curve input is rejected
+    with pytest.raises(ValueError, match="not on the BN254 curve"):
+        msm_pippenger_gpu([1], [3], [5])
     # mod was dropped and window_size is keyword-only, so the old call shape
     # fails loudly instead of silently using P as the window size
     with pytest.raises(TypeError):
