@@ -338,7 +338,7 @@ Scalars may be any integers (negative, or larger than r); they are reduced mod r
 ### Run benchmarks
 
 ```bash
-python -m benchmarks.run_all           # full run (~25 s) -> results/all_results.json + summary table
+python -m benchmarks.run_all           # full run (~35 s) -> results/all_results.json + summary table
 python -m benchmarks.run_all --quick   # smoke test in seconds -> results/quick_results.json (gitignored)
 python benchmarks/plot_results.py      # charts, light and dark, next to the JSON
 python demo/prover_simulation.py       # Groth16 prover timing simulation

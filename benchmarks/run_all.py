@@ -19,15 +19,27 @@ import time
 from pathlib import Path
 from typing import Any
 
-from benchmarks import bench_field, bench_field256, bench_msm, bench_ntt
+from benchmarks import bench_field, bench_field256, bench_msm, bench_ntt, bench_ntt256
 from benchmarks._harness import REPO_ROOT, collect_metadata
 
 FULL_OUTPUT = REPO_ROOT / "results" / "all_results.json"
 QUICK_OUTPUT = REPO_ROOT / "results" / "quick_results.json"  # gitignored: never mistaken for real data
 
 # For each benchmark: the fair CPU baseline, and the GPU timing a caller actually experiences
-BASELINE = {"field": "numpy", "field256": "python_ints", "ntt": "numpy", "msm": "naive"}
-BENCHMARKS = (("field", bench_field), ("field256", bench_field256), ("ntt", bench_ntt), ("msm", bench_msm))
+BASELINE = {
+    "field": "numpy",
+    "field256": "python_ints",
+    "ntt": "numpy",
+    "ntt256": "python_ints",
+    "msm": "naive",
+}
+BENCHMARKS = (
+    ("field", bench_field),
+    ("field256", bench_field256),
+    ("ntt", bench_ntt),
+    ("ntt256", bench_ntt256),
+    ("msm", bench_msm),
+)
 
 
 def run(*, quick: bool, output: Path) -> dict[str, Any]:

@@ -6,12 +6,12 @@ Usage:
     python benchmarks/plot_results.py --input results/x.json   # charts go next to the input
 
 Produces, each in a light and a "_dark" variant (for GitHub's <picture> switch):
-  latency_comparison.png  time per implementation vs size: 64-bit field,
-                          254-bit field, NTT, MSM
+  latency_comparison.png  time per implementation vs size: field
+                          multiplication and NTT over a 64-bit prime (left)
+                          and BN254's 254-bit Fr (right), and the MSM
   speedup_curve.png       what the GPU buys over the best CPU code running the
-                          same algorithm (NumPy for the 64-bit field and NTT,
-                          Python ints for the 254-bit field, CPU-digit
-                          Pippenger for MSM)
+                          same algorithm (NumPy for 64-bit, Python ints for
+                          254-bit, CPU-digit Pippenger for MSM)
 
 Design: colour follows the implementation and never its rank; every series also
 has its own marker shape (a second channel for colour-vision deficiency and for
@@ -26,6 +26,7 @@ import argparse
 import json
 import math
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -68,7 +69,7 @@ THEMES: dict[str, dict[str, Any]] = {
 SERIES = {
     "gpu": ("GPU, data on device", 0, "o"),
     "numpy": ("NumPy (fair CPU baseline)", 1, "s"),
-    "python_ints": ("Python ints (CPU baseline)", 1, "s"),
+    "python_ints": ("Python ints on NumPy arrays (CPU baseline)", 1, "s"),
     "gpu_e2e": ("GPU incl. host-device copies", 2, "^"),
     "gpu_e2e_ints": ("GPU incl. Python int conversion and copies", 2, "^"),
     "python": ("Pure Python (reference only)", 3, "D"),
@@ -79,13 +80,17 @@ SERIES = {
     "naive": ("Naive (one scalar mult per point)", 3, "D"),
 }
 
+# (benchmark, title, size unit, grid slot). Left column: the 64-bit prime;
+# right column: BN254's 254-bit fields; bottom-left stays empty.
 PANELS = [
-    ("field", "Field multiplication, 64-bit (998244353)", "elements"),
-    ("field256", "Field multiplication, 254-bit (BN254 Fr)", "elements"),
-    ("ntt", "NTT (998244353)", "elements"),
-    ("msm", "MSM, BN254 G1, 254-bit scalars", "points"),
+    ("field", "Field multiplication, 64-bit (998244353)", "elements", 0),
+    ("field256", "Field multiplication, 254-bit (BN254 Fr)", "elements", 1),
+    ("ntt", "NTT, 64-bit (998244353)", "elements", 2),
+    ("ntt256", "NTT, 254-bit (BN254 Fr)", "elements", 3),
+    ("msm", "MSM, BN254 G1, 254-bit scalars", "points", 5),
 ]
-FIGSIZE = (11.5, 8.6)  # 2 x 2 panels
+GRID = (3, 2)
+FIGSIZE = (11.5, 12.6)
 
 # (benchmark, GPU implementation, CPU implementation of the same algorithm)
 SPEEDUPS = [
@@ -95,19 +100,32 @@ SPEEDUPS = [
     ("field256", "gpu_e2e_ints", "python_ints"),
     ("ntt", "gpu", "numpy"),
     ("ntt", "gpu_e2e", "numpy"),
+    ("ntt256", "gpu", "python_ints"),
+    ("ntt256", "gpu_e2e_ints", "python_ints"),
     ("msm", "pippenger_gpu", "pippenger_cpu"),
 ]
 SPEEDUP_TITLES = {
     "field": "64-bit field multiplication: GPU vs NumPy",
     "field256": "254-bit field multiplication: GPU vs Python ints",
-    "ntt": "NTT (998244353): GPU vs NumPy",
+    "ntt": "64-bit NTT: GPU vs NumPy",
+    "ntt256": "254-bit NTT: GPU vs Python ints",
     "msm": "MSM Pippenger: GPU vs CPU digit extraction",
 }
 SPEEDUP_TICKS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000)
 
 
+def _panels(axes: Any) -> Iterator[tuple[Axes, str, str, str]]:
+    """(axes, benchmark, title, unit) for each panel, hiding the grid slots no panel uses."""
+    used = {slot for *_, slot in PANELS}
+    for i, ax in enumerate(axes.flat):
+        if i not in used:
+            ax.set_visible(False)
+    for bench, title, unit, slot in PANELS:
+        yield axes.flat[slot], bench, title, unit
+
+
 def _size_label(n: int, bench: str) -> str:
-    if bench == "ntt":
+    if bench.startswith("ntt"):
         return f"$2^{{{n.bit_length() - 1}}}$"
     for div, suffix in ((1_000_000, "M"), (1_000, "K")):
         if n >= div:
@@ -199,10 +217,10 @@ def _coincide(rows: list[dict[str, Any]], a: str, b: str, tolerance: float = 0.0
 
 
 def plot_latency(results: dict[str, Any], theme: dict[str, Any]) -> Any:
-    fig, axes = plt.subplots(2, 2, figsize=FIGSIZE)
+    fig, axes = plt.subplots(*GRID, figsize=FIGSIZE)
     fig.patch.set_facecolor(theme["surface"])
     fig.suptitle("Time per call, by implementation", color=theme["ink"], fontsize=13, y=0.99)
-    for ax, (bench, title, unit) in zip(axes.flat, PANELS, strict=True):
+    for ax, bench, title, unit in _panels(axes):
         _style_axes(ax, theme)
         rows = results.get(bench, [])
         if not rows:  # e.g. a results file from before this benchmark existed
@@ -246,12 +264,12 @@ def plot_latency(results: dict[str, Any], theme: dict[str, Any]) -> Any:
 
 
 def plot_speedup(results: dict[str, Any], theme: dict[str, Any]) -> Any:
-    fig, axes = plt.subplots(2, 2, figsize=FIGSIZE)
+    fig, axes = plt.subplots(*GRID, figsize=FIGSIZE)
     fig.patch.set_facecolor(theme["surface"])
     fig.suptitle(
         "GPU speedup over CPU code running the same algorithm", color=theme["ink"], fontsize=13, y=0.99
     )
-    for ax, (bench, _latency_title, unit) in zip(axes.flat, PANELS, strict=True):
+    for ax, bench, _latency_title, unit in _panels(axes):
         _style_axes(ax, theme)
         rows = results.get(bench, [])
         plotted = []
@@ -268,7 +286,7 @@ def plot_speedup(results: dict[str, Any], theme: dict[str, Any]) -> Any:
                 plotted.append(pts)
         ax.set_title(SPEEDUP_TITLES[bench], fontsize=10.5, loc="left", color=theme["ink"])
         if not plotted:
-            _no_data(ax, theme, "No GPU timings in this run")
+            _no_data(ax, theme, "No GPU timings in this run" if rows else "Not measured in this run")
             continue
         _set_size_ticks(ax, [row["n"] for row in rows], bench)
         ax.set_yscale("log")

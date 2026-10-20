@@ -1,6 +1,7 @@
 """tests/test_benchmarks.py — the benchmark harness runs end to end and checks its own results."""
 
 import json
+import random
 
 import numpy as np
 import pytest
@@ -9,6 +10,8 @@ from benchmarks import run_all
 from benchmarks._harness import check_equal
 from benchmarks.bench_msm import pippenger_window
 from benchmarks.bench_ntt import ntt_numpy
+from benchmarks.bench_ntt256 import spot_check
+from zkgpu.field import FIELD_MODULUS
 from zkgpu.gpu_backend import GPU_AVAILABLE
 from zkgpu.ntt import MOD, ntt
 
@@ -51,6 +54,26 @@ def test_numpy_baseline_matches_reference_ntt(n):
     """The fair CPU baseline must compute the same transform, or the comparison is meaningless."""
     a = np.random.default_rng(n).integers(0, MOD, size=n, dtype=np.int64)
     assert ntt_numpy(a, MOD).tolist() == ntt(a.tolist(), MOD)
+
+
+@pytest.mark.parametrize("n", [1, 2, 64, 1024])
+def test_numpy_baseline_runs_exactly_over_bn254_r(n):
+    """Products of 254-bit residues overflow int64, so this path must use exact Python ints."""
+    rng = random.Random(n)
+    a = [rng.randrange(FIELD_MODULUS) for _ in range(n)]
+    out = ntt_numpy(a, FIELD_MODULUS)
+    assert out.dtype == object
+    assert out.tolist() == ntt(a, FIELD_MODULUS)
+
+
+def test_spot_check_catches_a_wrong_output():
+    rng = random.Random(3)
+    a = [rng.randrange(FIELD_MODULUS) for _ in range(64)]
+    evals = ntt(a, FIELD_MODULUS)
+    spot_check(a, evals, [0, 1, 63])  # correct outputs pass
+    evals[1] = (evals[1] + 1) % FIELD_MODULUS
+    with pytest.raises(RuntimeError, match="NTT output 1"):
+        spot_check(a, evals, [0, 1, 63])
 
 
 def test_numpy_baseline_caches_survive_repeated_calls():

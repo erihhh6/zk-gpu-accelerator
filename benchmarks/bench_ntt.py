@@ -6,7 +6,8 @@ Implementations
 python    zkgpu.ntt.ntt, one butterfly per interpreted loop iteration. Shown
           for scale only: it is NOT a fair CPU baseline
 numpy     the same radix-2 algorithm as the GPU version, vectorised with
-          NumPy (one array operation per butterfly stage): the fair CPU baseline.
+          NumPy (one array operation per butterfly stage): the fair CPU baseline
+          (ntt_numpy; bench_ntt256 runs it over BN254's r too).
           Like the GPU version it caches its bit-reversal index and twiddle
           table per size, so warm timings on both sides cover the transform only
 gpu       zkgpu.ntt_gpu.ntt_gpu on device-resident data, caches warm
@@ -29,6 +30,12 @@ from zkgpu.ntt import get_ntt_root, ntt
 from zkgpu.ntt_gpu import ntt_gpu
 
 MOD = 998_244_353  # (MOD - 1)^2 < 2^63, so NumPy int64 products are exact
+_INT64_PRODUCT_SAFE_MOD = 3_037_000_500  # largest mod whose residue products fit int64
+
+
+def _dtype(mod: int) -> Any:
+    """int64 where residue products fit, else exact Python ints in object arrays (e.g. BN254's r)."""
+    return np.int64 if mod <= _INT64_PRODUCT_SAFE_MOD else object
 
 
 @lru_cache(maxsize=8)
@@ -46,11 +53,17 @@ def _bit_reverse_index(n: int) -> np.ndarray:
 def _twiddle_table(n: int, mod: int) -> np.ndarray:
     """[ω^0, ..., ω^(n/2 - 1)], built by doubling."""
     omega = get_ntt_root(n, mod)
-    table = np.ones(1, dtype=np.int64)
+    table = np.ones(1, dtype=_dtype(mod))
     while table.size < n // 2:
         table = np.concatenate([table, table * pow(omega, table.size, mod) % mod])
     table.flags.writeable = False
     return table
+
+
+def prepare_ntt_numpy(n: int, mod: int) -> None:
+    """Build ntt_numpy's per-size caches, so a timing without warm-up covers the transform only."""
+    _bit_reverse_index(n)
+    _twiddle_table(n, mod)
 
 
 def ntt_numpy(a: np.ndarray, mod: int) -> np.ndarray:
@@ -61,11 +74,13 @@ def ntt_numpy(a: np.ndarray, mod: int) -> np.ndarray:
     caches), so the CPU/GPU comparison measures the hardware rather than two
     different algorithms. Without the caches, rebuilding the index and table
     was 22-36% of every call, which the warm GPU timing never pays.
+
+    Moduli whose products overflow int64 (BN254's r) run the same code on
+    object arrays of Python ints: exact, and about 2x faster than the
+    interpreted loop of zkgpu.ntt.ntt at small sizes (equal by 2^18).
     """
-    if mod > 3_037_000_500:
-        raise ValueError("int64 products overflow for this modulus")
     n = len(a)
-    arr = (np.asarray(a, dtype=np.int64) % mod)[_bit_reverse_index(n)]
+    arr = (np.asarray(a, dtype=_dtype(mod)) % mod)[_bit_reverse_index(n)]
     table = _twiddle_table(n, mod)
 
     length = 2
