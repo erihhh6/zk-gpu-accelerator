@@ -52,6 +52,14 @@ def test_numpy_baseline_matches_reference_ntt(n):
     assert ntt_numpy(a, MOD).tolist() == ntt(a.tolist(), MOD)
 
 
+def test_numpy_baseline_caches_survive_repeated_calls():
+    """Warm calls reuse the cached index and twiddles; they must stay correct for new inputs."""
+    rng = np.random.default_rng(7)
+    for _ in range(3):
+        a = rng.integers(0, MOD, size=256, dtype=np.int64)
+        assert ntt_numpy(a, MOD).tolist() == ntt(a.tolist(), MOD)
+
+
 def test_pippenger_window_follows_cost_model():
     assert [pippenger_window(n) for n in (100, 1_000, 10_000)] == [5, 7, 10]
 

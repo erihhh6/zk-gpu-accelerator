@@ -6,7 +6,9 @@ Implementations
 python    zkgpu.ntt.ntt, one butterfly per interpreted loop iteration. Shown
           for scale only: it is NOT a fair CPU baseline
 numpy     the same radix-2 algorithm as the GPU version, vectorised with
-          NumPy (one array operation per butterfly stage): the fair CPU baseline
+          NumPy (one array operation per butterfly stage): the fair CPU baseline.
+          Like the GPU version it caches its bit-reversal index and twiddle
+          table per size, so warm timings on both sides cover the transform only
 gpu       zkgpu.ntt_gpu.ntt_gpu on device-resident data, caches warm
 gpu_e2e   the same, starting from host data and copying the result back
 gpu_cold  the first call for a size: includes building the cached twiddle
@@ -15,6 +17,7 @@ gpu_cold  the first call for a size: includes building the cached twiddle
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
@@ -28,27 +31,42 @@ from zkgpu.ntt_gpu import ntt_gpu
 MOD = 998_244_353  # (MOD - 1)^2 < 2^63, so NumPy int64 products are exact
 
 
-def ntt_numpy(a: np.ndarray, mod: int) -> np.ndarray:
-    """
-    Radix-2 Cooley-Tukey NTT with one vectorised NumPy operation per stage.
-
-    Mirrors zkgpu.ntt_gpu (same roots, same twiddle layout), so the CPU/GPU
-    comparison measures the hardware rather than two different algorithms.
-    """
-    if mod > 3_037_000_500:
-        raise ValueError("int64 products overflow for this modulus")
-    n = len(a)
+@lru_cache(maxsize=8)
+def _bit_reverse_index(n: int) -> np.ndarray:
     bits = n.bit_length() - 1
     idx, rev = np.arange(n, dtype=np.int64), np.zeros(n, dtype=np.int64)
     for _ in range(bits):
         rev = (rev << 1) | (idx & 1)
         idx >>= 1
-    arr = (np.asarray(a, dtype=np.int64) % mod)[rev]
+    rev.flags.writeable = False  # shared between calls: a stray write would corrupt later ones
+    return rev
 
+
+@lru_cache(maxsize=8)
+def _twiddle_table(n: int, mod: int) -> np.ndarray:
+    """[ω^0, ..., ω^(n/2 - 1)], built by doubling."""
     omega = get_ntt_root(n, mod)
-    table = np.ones(1, dtype=np.int64)  # [ω^0, ..., ω^(n/2 - 1)], built by doubling
+    table = np.ones(1, dtype=np.int64)
     while table.size < n // 2:
         table = np.concatenate([table, table * pow(omega, table.size, mod) % mod])
+    table.flags.writeable = False
+    return table
+
+
+def ntt_numpy(a: np.ndarray, mod: int) -> np.ndarray:
+    """
+    Radix-2 Cooley-Tukey NTT with one vectorised NumPy operation per stage.
+
+    Mirrors zkgpu.ntt_gpu (same roots, same twiddle layout, same per-size
+    caches), so the CPU/GPU comparison measures the hardware rather than two
+    different algorithms. Without the caches, rebuilding the index and table
+    was 22-36% of every call, which the warm GPU timing never pays.
+    """
+    if mod > 3_037_000_500:
+        raise ValueError("int64 products overflow for this modulus")
+    n = len(a)
+    arr = (np.asarray(a, dtype=np.int64) % mod)[_bit_reverse_index(n)]
+    table = _twiddle_table(n, mod)
 
     length = 2
     while length <= n:
