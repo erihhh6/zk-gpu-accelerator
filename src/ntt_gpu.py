@@ -7,76 +7,75 @@ only CuPy and nvrtc are needed (src.gpu_backend explains how nvrtc is found).
 
 Algorithm (per stage)
 ---------------------
-For stage with half = length // 2:
-  1. Precompute twiddle factors wk[j] = w^j mod p  (on CPU, copied to GPU)
-  2. Reshape the flat array to (-1, length)
-  3. upper[:, j] = arr[:, j],  lower[:, j] = arr[:, j + half]
-  4. v[:, j]     = (lower[:, j] * wk[j]) % mod
-  5. arr[:, j]        = (upper + v) % mod
-  6. arr[:, j + half] = (upper - v + mod) % mod
-  7. Flatten back
+For stage with half = length // 2, viewing the array as (n // length, length):
+  1. wk[j] = ω_length^j for j < half. Because ω_length = ω_n^(n/length), this
+     is a strided view of one table [ω_n^0, ..., ω_n^(n/2 - 1)]
+  2. upper = arr[:, :half], lower = arr[:, half:]   (views, no copies)
+  3. v = lower · wk mod p         (wk broadcasts across all groups)
+  4. arr[:, :half] = upper + v mod p,  arr[:, half:] = upper - v mod p
 
-CuPy broadcasts wk (shape: half,) across groups (shape: n//length, half)
-so step 4 is a single vectorized modular multiply on the GPU.
+The twiddle table and the bit-reversal index depend only on (n, mod, invert),
+so they are built once on the device and cached: repeated transforms of the
+same size, the normal pattern in a prover, reuse them.
+
+Modular products and sums go through src.field_gpu, which is exact for any
+modulus below 2^63. Roots come from src.ntt.get_ntt_root, so the GPU and CPU
+transforms use identical roots and agree element for element.
 
 Limitations
 -----------
-- Same root selection as src.ntt (PRIMITIVE_ROOT = 3), so it is only correct
-  for moduli where 3 is a quadratic non-residue, such as 998244353.
-- Elements are int64 and products are formed in int64, so mod must be
-  below ~3.03 × 10⁹ (≈ 2^31.5).
-- Twiddle factors are rebuilt in a Python loop on every call; at N = 2^20
-  this host-side loop is over half of the total runtime.
+- Elements are int64, so mod must be an odd prime below 2^63 with n | mod - 1.
+  BN254's r (~2^254) does not fit; use src.ntt.ntt for it.
 """
 
 from __future__ import annotations
 
-import math
+import functools
 
 import numpy as np
 
+from src.field_gpu import gpu_batch_add, gpu_batch_mul
 from src.gpu_backend import GPU_AVAILABLE as _gpu_available, cp, warn_cpu_fallback
-from src.ntt import PRIMITIVE_ROOT, ntt as ntt_cpu
+from src.ntt import get_ntt_root, ntt as ntt_cpu
+
+_INT64_MAX = 2**63 - 1
+
+# Each cached twiddle table holds n/2 int64 values (4 MiB at n = 2^20); a
+# handful of (size, modulus, direction) combinations covers realistic use.
+# Cached arrays are shared, so they must only ever be read.
+_CACHE_SIZE = 16
 
 
 # ------------------------------------------------------------------
-# GPU NTT kernels
-# ------------------------------------------------------------------
-
-if _gpu_available:
-    # Modular multiply for mod < 2^31: values < mod so a*b < 2^62, fits in int64
-    # Safe for NTT with mod=998244353 (< 2^30)
-    _modmul_ek = cp.ElementwiseKernel(
-        "int64 a, int64 b, int64 mod",
-        "int64 c",
-        "c = a * b % mod",
-        "ntt_modmul",
-    )
-
-
-def _modmul_gpu(a: "cp.ndarray", b: "cp.ndarray", mod: int) -> "cp.ndarray":
-    """Element-wise modular multiply on GPU. Safe when mod < 2^31."""
-    return _modmul_ek(a, b, mod)
-
-
-# ------------------------------------------------------------------
-# Bit-reversal permutation (GPU via CuPy indexing)
+# Cached per-size device data
 # ------------------------------------------------------------------
 
 
-def _bit_reverse_permute_gpu(arr: "cp.ndarray") -> "cp.ndarray":
-    """Return a bit-reversal permuted copy of *arr* on the GPU."""
-    n = len(arr)
+@functools.lru_cache(maxsize=_CACHE_SIZE)
+def _bit_reverse_index(n: int) -> "cp.ndarray":
+    """Device array rev where rev[i] is i with its log2(n) bits reversed."""
     bits = n.bit_length() - 1
-    # Build reversal index on CPU then transfer once
-    idx = np.arange(n, dtype=np.int32)
-    rev = np.zeros(n, dtype=np.int32)
-    tmp = idx.copy()
+    idx = np.arange(n, dtype=np.int64)
+    rev = np.zeros(n, dtype=np.int64)
     for _ in range(bits):
-        rev = (rev << 1) | (tmp & 1)
-        tmp >>= 1
-    rev_gpu = cp.array(rev)
-    return arr[rev_gpu]
+        rev = (rev << 1) | (idx & 1)
+        idx >>= 1
+    return cp.asarray(rev)
+
+
+@functools.lru_cache(maxsize=_CACHE_SIZE)
+def _twiddle_table(n: int, mod: int, invert: bool) -> "cp.ndarray":
+    """Device array [ω^0, ω^1, ..., ω^(n/2 - 1)] for ω = ω_n, or ω_n^-1 when inverting."""
+    omega = get_ntt_root(n, mod)
+    if invert:
+        omega = pow(omega, mod - 2, mod)
+    # Doubling: if table = [ω^0 .. ω^(s-1)] then table · ω^s = [ω^s .. ω^(2s-1)],
+    # so log2(n) kernel launches replace an n/2-step Python loop.
+    table = cp.ones(1, dtype=cp.int64)
+    while table.size < n // 2:
+        step = cp.asarray(pow(omega, table.size, mod), dtype=cp.int64)
+        table = cp.concatenate([table, gpu_batch_mul(table, step, mod)])
+    return table
 
 
 # ------------------------------------------------------------------
@@ -90,71 +89,68 @@ def ntt_gpu(
     invert: bool = False,
 ) -> "cp.ndarray":
     """
-    Cooley-Tukey NTT on GPU using CuPy vectorized butterfly.
+    Cooley-Tukey NTT on GPU using CuPy vectorized butterflies.
 
     Parameters
     ----------
-    a      : cp.ndarray of dtype int64, length a power of 2
-    mod    : NTT-friendly prime below ~2^31.5 for which 3 is a quadratic
-             non-residue (see module Limitations); 998244353 qualifies
+    a      : cp.ndarray of int64, length a power of 2 (any values; they are
+             reduced mod *mod* first)
+    mod    : odd prime below 2^63 with len(a) dividing mod - 1
     invert : if True, compute the inverse NTT
 
     Returns
     -------
-    cp.ndarray int64 of the same length (np.ndarray on the CPU fallback)
+    cp.ndarray int64 of the same length with values in [0, mod)
+    (np.ndarray on the CPU fallback)
+
+    Raises
+    ------
+    ValueError : mod >= 2^63, or the same length/modulus errors as src.ntt.ntt
     """
+    if mod > _INT64_MAX:
+        raise ValueError(
+            f"ntt_gpu works on int64 elements, so mod must be below 2^63, got {mod}; "
+            "use src.ntt.ntt for larger moduli such as BN254's r"
+        )
     if not _gpu_available:
         warn_cpu_fallback("ntt_gpu", "the CPU NTT")
         a_list = a.tolist() if hasattr(a, "tolist") else list(a)
-        result = ntt_cpu(a_list, mod, invert)
-        return np.array(result, dtype=np.int64)  # type: ignore[return-value]
+        return np.array(ntt_cpu(a_list, mod, invert), dtype=np.int64)  # type: ignore[return-value]
 
     n = len(a)
-    if n == 0:
-        return a.copy()
-    if n & (n - 1):
+    if n & (n - 1):  # lets n == 0 through
         raise ValueError(f"NTT length must be a power of 2, got {n}")
+    if n == 0:
+        return cp.empty(0, dtype=cp.int64)
+    get_ntt_root(n, mod)  # validate mod and n up front, exactly as the CPU NTT does
+
+    # Reduce once so every butterfly sees residues; CuPy's % floors like NumPy's
+    arr = cp.asarray(a, dtype=cp.int64) % mod
     if n == 1:
-        return a.copy()
+        return arr
 
-    arr = _bit_reverse_permute_gpu(cp.array(a, dtype=cp.int64))
+    arr = arr[_bit_reverse_index(n)]
+    table = _twiddle_table(n, mod, invert)
 
-    log_n = int(math.log2(n))
     length = 2
-    for _ in range(log_n):
+    while length <= n:
         half = length >> 1
+        wk = table[:: n // length]  # ω_length^j for j < half, as a strided view
+        groups = arr.reshape(-1, length)
+        upper, lower = groups[:, :half], groups[:, half:]
 
-        # Primitive root of order *length*
-        w = pow(PRIMITIVE_ROOT, (mod - 1) // length, mod)
-        if invert:
-            w = pow(w, mod - 2, mod)
-
-        # Twiddle factors [w^0, w^1, ..., w^(half-1)] — computed on CPU, tiny array
-        wk_cpu = np.empty(half, dtype=np.int64)
-        cur = 1
-        for j in range(half):
-            wk_cpu[j] = cur
-            cur = cur * w % mod
-        wk = cp.array(wk_cpu)  # shape (half,)
-
-        # Reshape: (num_groups, length)
-        arr2 = arr.reshape(-1, length)
-        upper = arr2[:, :half].copy()   # (groups, half)
-        lower = arr2[:, half:].copy()   # (groups, half)
-
-        # v[g, j] = lower[g, j] * wk[j]  — broadcast wk across groups
-        wk_broad = cp.broadcast_to(wk[cp.newaxis, :], lower.shape).copy()
-        v = _modmul_gpu(lower, wk_broad, mod)
-
-        arr2[:, :half] = (upper + v) % mod
-        arr2[:, half:] = (upper - v + mod) % mod
-        arr = arr2.reshape(-1)
+        v = gpu_batch_mul(lower, wk, mod)  # wk broadcasts across groups
+        # Both halves are computed in full before either is overwritten
+        new_upper = gpu_batch_add(upper, v, mod)
+        new_lower = (upper - v) % mod  # upper - v lies in (-mod, mod): no overflow
+        groups[:, :half] = new_upper
+        groups[:, half:] = new_lower
 
         length <<= 1
 
     if invert:
-        n_inv = pow(n, mod - 2, mod)
-        arr = (arr * n_inv) % mod
+        n_inv = cp.asarray(pow(n, mod - 2, mod), dtype=cp.int64)
+        arr = gpu_batch_mul(arr, n_inv, mod)
 
     return arr
 

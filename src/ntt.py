@@ -11,21 +11,19 @@ where ω is a primitive N-th root of unity in F_p (i.e. ω^N ≡ 1 mod p and
 ω^k ≢ 1 mod p for 0 < k < N).
 
 Instead of complex roots e^(2πi/N) used in FFT, we use the *number-theoretic*
-root ω = g^((p-1)/N) mod p, where g is a primitive root of F_p.
+root ω = g^((p-1)/N) mod p, where g is a quadratic non-residue of F_p (see
+quadratic_non_residue for why that suffices for power-of-2 sizes).
 
-NTT-friendly prime
-------------------
-We use MOD = 998 244 353 = 119 · 2^23 + 1 (a.k.a. "the competitive-programming
-NTT prime"). Its factorisation p - 1 = 2^23 · 7 · 17 means the field supports
-NTT for any power-of-2 length N ≤ 2^23.
+NTT-friendly primes
+-------------------
+A prime p supports power-of-2 sizes N up to the largest power of 2 dividing
+p - 1 (its "2-adicity"). The default MOD = 998 244 353 = 119 · 2^23 + 1 (a.k.a.
+"the competitive-programming NTT prime") supports N ≤ 2^23.
 
 BN254's scalar field r is NTT-friendly too: r - 1 is divisible by 2^28, so it
-supports power-of-2 sizes up to 2^28 (which is why Groth16/PLONK over BN254
-use it). This module cannot use r yet: roots are derived from the hardcoded
-PRIMITIVE_ROOT = 3, which is a quadratic residue mod r, so ntt(a, r) and
-polynomial_mul(..., r) silently return wrong results. The same applies to any
-modulus for which 3 is a quadratic residue (tracked as a known bug in
-tests/test_ntt.py).
+supports N ≤ 2^28, which is why Groth16/PLONK over BN254 use it. This module
+works over r directly (Python ints); src.ntt_gpu cannot, because its elements
+are int64.
 
 Applications in ZK
 ------------------
@@ -36,31 +34,96 @@ is done in O(N log N) via NTT instead of O(N²) naive convolution.
 
 from __future__ import annotations
 
+import functools
+
 MOD: int = 998_244_353  # NTT-friendly prime: 119 * 2^23 + 1
-PRIMITIVE_ROOT: int = 3  # Primitive root of F_998244353 only; not valid for every modulus
 
 
 # ------------------------------------------------------------------
 # Root computation helpers
 # ------------------------------------------------------------------
 
+# Miller-Rabin with these bases is deterministic for every n < 3.3 · 10^24
+# (Sorenson & Webster, 2015). Above that it is a strong probable-prime test:
+# a composite passing all 13 bases is vanishingly unlikely unless deliberately
+# constructed, and the moduli used here are published primes.
+_MILLER_RABIN_BASES = (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41)
 
-def get_ntt_root(n: int, mod: int, primitive_root: int = PRIMITIVE_ROOT) -> int:
-    """
-    Return ω = primitive_root^((mod-1)/n) mod mod — the principal n-th root of unity.
 
-    Preconditions:
-      - n must be a power of 2
-      - (mod - 1) must be divisible by n (checked)
-      - primitive_root must be a quadratic non-residue mod *mod* (NOT checked):
-        otherwise ω^(n/2) = 1 instead of -1 and ω is not a primitive root
+def _is_probable_prime(n: int) -> bool:
+    if n < 2:
+        return False
+    for p in _MILLER_RABIN_BASES:
+        if n % p == 0:
+            return n == p
+    s = ((n - 1) & -(n - 1)).bit_length() - 1  # n - 1 = d · 2^s with d odd
+    d = (n - 1) >> s
+    for a in _MILLER_RABIN_BASES:
+        x = pow(a, d, n)
+        if x in (1, n - 1):
+            continue
+        for _ in range(s - 1):
+            x = x * x % n
+            if x == n - 1:
+                break
+        else:
+            return False  # a is a witness that n is composite
+    return True
+
+
+@functools.lru_cache(maxsize=None)
+def quadratic_non_residue(mod: int) -> int:
     """
+    Smallest quadratic non-residue g of F_mod, the generator of every NTT root.
+
+    Why a non-residue suffices: for n = 2^k dividing mod - 1, the root
+    ω = g^((mod-1)/n) satisfies ω^(n/2) = g^((mod-1)/2) = -1 by Euler's
+    criterion, so ω has order exactly n, i.e. it is a primitive n-th root of
+    unity. A full primitive root of F_mod would also work, but finding one
+    needs the factorisation of mod - 1, which is infeasible for 254-bit moduli.
+    Testing a candidate costs one exponentiation and half of all residues
+    qualify, so the search ends almost immediately (3 for 998244353, 5 for
+    BN254's r). Cached, so callers can ask for it on every transform.
+
+    Raises ValueError unless *mod* is an odd prime.
+    """
+    if mod < 3 or not _is_probable_prime(mod):
+        raise ValueError(f"NTT modulus must be an odd prime, got {mod}")
+    for g in range(2, mod):
+        if pow(g, (mod - 1) // 2, mod) == mod - 1:
+            return g
+    raise AssertionError("unreachable: every odd prime has a quadratic non-residue")
+
+
+def get_ntt_root(n: int, mod: int, non_residue: int | None = None) -> int:
+    """
+    Return a primitive n-th root of unity ω in F_mod, for n a power of 2.
+
+    ω = g^((mod-1)/n), where g is *non_residue* or, by default, the smallest
+    quadratic non-residue. Deriving every size from the same g keeps roots
+    consistent across sizes: get_ntt_root(n/2) == get_ntt_root(n)^2.
+
+    Raises ValueError if n is not a power of 2, if mod is not an odd prime, if
+    n does not divide mod - 1, or if *non_residue* gives no primitive root.
+    """
+    if n < 1 or n & (n - 1):
+        raise ValueError(f"NTT size must be a power of 2, got {n}")
+    default_g = quadratic_non_residue(mod)  # also validates mod
+    g = default_g if non_residue is None else non_residue
     if (mod - 1) % n != 0:
         raise ValueError(
             f"NTT of size {n} not supported for mod={mod}: "
             f"(mod-1) = {mod-1} is not divisible by n."
         )
-    return pow(primitive_root, (mod - 1) // n, mod)
+    omega = pow(g, (mod - 1) // n, mod)
+    # Primitive iff ω^(n/2) = -1. Always true for a non-residue; this catches an
+    # explicit non_residue that is really a residue (as 3 is mod BN254's r).
+    if n > 1 and pow(omega, n // 2, mod) != mod - 1:
+        raise ValueError(
+            f"{g} gives no primitive {n}-th root of unity mod {mod}; "
+            "it must be a quadratic non-residue"
+        )
+    return omega
 
 
 # ------------------------------------------------------------------
@@ -92,18 +155,27 @@ def ntt(a: list[int], mod: int = MOD, invert: bool = False) -> list[int]:
     Parameters
     ----------
     a      : input coefficient vector; length must be a power of 2
-    mod    : field modulus (default 998244353)
+    mod    : odd prime with len(a) dividing mod - 1 (default 998244353)
     invert : if True, compute the inverse NTT (INTT)
 
     Returns
     -------
     list[int] : transformed vector (same length as input), all values in [0, mod)
+
+    Raises
+    ------
+    ValueError : if the length is not a power of 2, mod is not an odd prime,
+                 or the length does not divide mod - 1
     """
     n = len(a)
     if n == 0:
         return []
     if n & (n - 1):
         raise ValueError(f"NTT length must be a power of 2, got {n}")
+
+    omega = get_ntt_root(n, mod)  # validates mod and n before doing any work
+    if invert:
+        omega = pow(omega, mod - 2, mod)
     if n == 1:
         return [a[0] % mod]
 
@@ -111,9 +183,8 @@ def ntt(a: list[int], mod: int = MOD, invert: bool = False) -> list[int]:
 
     length = 2
     while length <= n:
-        w_len = get_ntt_root(length, mod)
-        if invert:
-            w_len = pow(w_len, mod - 2, mod)
+        # ω_length = ω_n^(n/length): exactly the root get_ntt_root(length) gives
+        w_len = pow(omega, n // length, mod)
 
         half = length >> 1
         for i in range(0, n, length):
