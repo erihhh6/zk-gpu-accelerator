@@ -116,17 +116,35 @@ def test_msm_length_mismatch_raises():
         msm_double_and_add([G], [1, 2])
 
 
-@known_bug(
-    "msm_double_and_add doubles every input point at every bit (N·bits doublings), so it is not Shamir/Straus",
-    raises=AssertionError,
-)
 def test_double_and_add_doubles_once_per_bit(monkeypatch):
+    """Straus/Shamir: one shared accumulator, so doublings do not grow with N."""
     rng = random.Random(5)
     points = [G * rng.randint(1, 2**32) for _ in range(8)]
     scalars = [rng.randint(2**15, 2**16 - 1) for _ in range(8)]  # exactly 16 bits each
     calls = count_doublings(monkeypatch)
     msm_double_and_add(points, scalars)
     assert calls["n"] <= 16 + len(points)  # one shared accumulator doubling per bit
+
+
+def test_double_and_add_negative_scalars():
+    """-k·P = k·(-P); the old bit loop silently returned O when every scalar was negative."""
+    points = [G, G * 2, G * 3]
+    for scalars in ([-5, 7, 0], [-1, -2, -3]):
+        assert msm_double_and_add(points, scalars) == msm_naive(points, scalars)
+    assert msm_double_and_add([G], [-5]) == -(G * 5)
+
+
+def test_double_and_add_full_size_and_oversized_scalars():
+    rng = random.Random(43)
+    points = [G * k for k in (3, 5, 7, 11)]
+    scalars = [rng.randrange(R) for _ in points]  # ~254-bit, like real ZK scalars
+    assert msm_double_and_add(points, scalars) == msm_naive(points, scalars)
+    assert msm_double_and_add([G], [R + 3]) == G * 3  # G has order r
+
+
+def test_double_and_add_with_identity_points():
+    O = Point.identity()
+    assert msm_double_and_add([O, G, O], [5, 3, -2]) == G * 3
 
 
 # ------------------------------------------------------------------

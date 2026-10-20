@@ -9,7 +9,7 @@ field_gpu   : Batch modular arithmetic on GPU (CuPy ElementwiseKernel, int64 mod
 curve       : BN254 elliptic curve point operations (affine coordinates)
 ntt         : Number Theoretic Transform — Cooley-Tukey CPU implementation
 ntt_gpu     : NTT on GPU via vectorized CuPy butterflies
-msm         : Multi-Scalar Multiplication on CPU (naive + bit-serial)
+msm         : Multi-Scalar Multiplication on CPU (naive + Straus/Shamir)
 msm_gpu     : Pippenger MSM with GPU scalar-window extraction (point math on CPU)
 """
 
