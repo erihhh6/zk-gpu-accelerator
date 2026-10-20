@@ -8,7 +8,7 @@ import pytest
 from zkgpu import ntt_gpu as ntt_gpu_module
 from zkgpu.field import FIELD_MODULUS as BN254_R
 from zkgpu.gpu_backend import GpuFallbackWarning, cp
-from zkgpu.ntt import MOD, get_ntt_root, ntt, polynomial_mul, quadratic_non_residue
+from zkgpu.ntt import MOD, _is_probable_prime, get_ntt_root, ntt, polynomial_mul, quadratic_non_residue
 from zkgpu.ntt_gpu import ntt_gpu
 
 # Largest prime below 2^63 of the form k·2^32 + 1: exercises field_gpu's
@@ -161,6 +161,30 @@ def test_explicit_residue_is_rejected():
 def test_get_ntt_root_rejects_non_power_of_two():
     with pytest.raises(ValueError, match="power of 2"):
         get_ntt_root(12, MOD)
+
+
+def test_ntt_of_empty_input_is_empty():
+    assert ntt([], MOD) == []
+
+
+@pytest.mark.parametrize("n", [3, 5, 41, 12_289, MOD, 2**61 - 1, 2**63 - 25, BN254_R])
+def test_is_probable_prime_accepts_primes(n):
+    assert _is_probable_prime(n)
+
+
+@pytest.mark.parametrize(
+    "n",
+    [
+        0,
+        1,
+        4,
+        561,  # Carmichael number: fools Fermat's test for every coprime base
+        3_215_031_751,  # 151·751·28351: strong pseudoprime to bases 2, 3, 5 and 7; base 11 exposes it
+        (2**61 - 1) * (2**31 - 1),  # no small factors, so only a Miller-Rabin witness can reject it
+    ],
+)
+def test_is_probable_prime_rejects_composites(n):
+    assert not _is_probable_prime(n)
 
 
 # ------------------------------------------------------------------

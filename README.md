@@ -259,6 +259,7 @@ pytest -v -rxs
 - Tests marked `gpu` skip automatically when no usable GPU is found, and the skip message names the reason.
 - A newly found bug is first recorded as a **known bug**: a test that asserts the *correct* behaviour, marked with `known_bug` (see `tests/known_bugs.py`) so it is reported as `xfail` until fixed. The marker is strict, so the commit that fixes the bug must also remove it.
 - `-rxs` prints the reason for every skip and xfail.
+- `pytest --cov` adds a line-and-branch coverage report for the `zkgpu` package. CI runs it on Linux (Python 3.11–3.13) and Windows, and fails below the floor set in `pyproject.toml`. CI has no GPU, so the CUDA paths only count on a GPU machine: about 83% total coverage there versus about 97% locally on an RTX 5050.
 
 ### Lint, format and type-check
 

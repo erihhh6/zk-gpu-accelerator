@@ -6,11 +6,21 @@ on:
   pull_request:
     branches: ["main", "master"]
 
+# The workflow only reads the repository; deny everything else to its GITHUB_TOKEN.
+permissions:
+  contents: read
+
+# A newer push to the same branch makes an in-flight run pointless: cancel it.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     # Same tools and versions as the pre-commit hooks (both read pyproject.toml)
     name: Lint and type-check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
@@ -38,13 +48,19 @@ jobs:
         run: mypy
 
   test:
-    name: Tests (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
 
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         python-version: ["3.11", "3.12", "3.13"]
+        include:
+          # One Windows run: gpu_backend's DLL search-path logic only executes there
+          - os: windows-latest
+            python-version: "3.13"
 
     steps:
       - name: Checkout repository
@@ -66,6 +82,12 @@ jobs:
         run: |
           python -c "import zkgpu; print('zkgpu', zkgpu.__version__)"
 
-      - name: Run tests (CPU-only, GPU tests auto-skip)
+      - name: Run tests with coverage (CPU-only, GPU tests auto-skip)
+        # Fails below the coverage floor set in pyproject.toml ([tool.coverage.report])
         run: |
-          python -m pytest -v --tb=short -rxs
+          python -m pytest -v --tb=short -rxs --cov
+
+      - name: Coverage summary
+        shell: bash  # bash on Windows runners too, for the redirect below
+        run: |
+          python -m coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY"

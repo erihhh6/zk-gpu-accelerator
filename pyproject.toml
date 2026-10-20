@@ -31,7 +31,7 @@ gpu = ["cupy-cuda12x>=13.0"]
 bench = ["matplotlib>=3.8"]
 # Linters are pinned exactly: a new ruff/mypy release can add rules or change
 # inference, which should be an explicit upgrade rather than a surprise CI failure.
-dev = ["pytest>=8.0", "ruff==0.17.1", "mypy==2.4.0", "pre-commit>=4.0"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff==0.17.1", "mypy==2.4.0", "pre-commit>=4.0"]
 
 [project.urls]
 Repository = "https://github.com/erihhh6/zk-gpu-accelerator"
@@ -75,6 +75,20 @@ native_parser = false
 # CuPy ships no type information, and CI installs it not at all
 module = ["cupy", "cupy.*"]
 ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["zkgpu"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+# CI runners have no GPU, so the CUDA code paths never execute there (~83% total;
+# ~97% on a GPU machine). This floor guards the CPU and fallback code, with a
+# little headroom for platform-specific lines (the Windows DLL-path logic).
+fail_under = 82
+exclude_also = [
+    'raise AssertionError\("unreachable',
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

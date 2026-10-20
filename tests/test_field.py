@@ -72,6 +72,13 @@ def test_fp_repr():
     assert "Fp(" in repr(Fp(42))
 
 
+def test_fp_negation_hash_and_int():
+    assert -Fp(3) == FIELD_MODULUS - 3
+    assert -Fp(0) == 0
+    assert hash(Fp(7)) == hash(Fp(7 + FIELD_MODULUS))  # equal elements hash equally
+    assert int(Fp(-1)) == FIELD_MODULUS - 1
+
+
 def test_fp_interoperates_with_int():
     assert Fp(3) + 4 == Fp(7)
     assert 4 + Fp(3) == Fp(7)
