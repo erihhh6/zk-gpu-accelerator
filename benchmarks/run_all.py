@@ -38,7 +38,8 @@ def run(*, quick: bool, output: Path) -> dict[str, Any]:
         print(f"    done in {time.perf_counter() - t0:.1f} s")
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
+    # newline="\n": the same bytes on every OS, matching .gitattributes (eol=lf)
+    output.write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8", newline="\n")
     print_summary(results)
     print(f"\nResults saved to {output}")
     return results

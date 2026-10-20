@@ -1,122 +1,150 @@
 {
+  "meta": {
+    "timestamp_utc": "2026-10-20T19:46:03+00:00",
+    "git_commit": "1c9218f1cb05147c28e01d4085bd5fcda6636b7a",
+    "git_dirty": false,
+    "zkgpu": "0.1.0",
+    "python": "3.13.9",
+    "numpy": "2.3.4",
+    "os": "Windows-11-10.0.26200-SP0",
+    "cpu": "AMD Ryzen 7 260 w/ Radeon 780M Graphics",
+    "cpu_logical_cores": 16,
+    "gpu": {
+      "name": "NVIDIA GeForce RTX 5050 Laptop GPU",
+      "compute_capability": "12.0",
+      "memory_gib": 8.0,
+      "cuda_runtime": "12.9",
+      "cuda_driver_supports": "13.2",
+      "cupy": "14.0.1"
+    },
+    "gpu_unavailable_reason": null,
+    "quick": false,
+    "method": "median wall-clock time after one warm-up call, repeated within a time budget; re-measured (up to 3 attempts) when the median exceeds 1.25x the fastest sample; GPU timings synchronise the device before the clock stops; 'gpu' starts from device-resident data, 'gpu_e2e' includes host<->device copies"
+  },
   "field": [
     {
       "n": 10000,
-      "cpu_ms": 0.039,
-      "gpu_ms": 0.019,
-      "speedup": 2.05,
-      "cpu_throughput_meps": 257.07,
-      "gpu_throughput_meps": 526.32
+      "mod": 998244353,
+      "verified": true,
+      "ms": {
+        "numpy": 0.018700025975704193,
+        "gpu": 0.013899989426136017,
+        "gpu_e2e": 0.14810007996857166
+      }
     },
     {
       "n": 100000,
-      "cpu_ms": 0.226,
-      "gpu_ms": 0.027,
-      "speedup": 8.38,
-      "cpu_throughput_meps": 442.09,
-      "gpu_throughput_meps": 3703.7
+      "mod": 998244353,
+      "verified": true,
+      "ms": {
+        "numpy": 0.1713000237941742,
+        "gpu": 0.022799940779805183,
+        "gpu_e2e": 0.40570017881691456
+      }
     },
     {
       "n": 1000000,
-      "cpu_ms": 3.56,
-      "gpu_ms": 0.079,
-      "speedup": 45.06,
-      "cpu_throughput_meps": 280.91,
-      "gpu_throughput_meps": 12658.23
+      "mod": 998244353,
+      "verified": true,
+      "ms": {
+        "numpy": 3.2616998068988323,
+        "gpu": 0.05230004899203777,
+        "gpu_e2e": 2.689000219106674
+      }
     },
     {
       "n": 10000000,
-      "cpu_ms": 35.269,
-      "gpu_ms": 0.837,
-      "speedup": 42.14,
-      "cpu_throughput_meps": 283.54,
-      "gpu_throughput_meps": 11947.43
+      "mod": 998244353,
+      "verified": true,
+      "ms": {
+        "numpy": 33.6795998737216,
+        "gpu": 0.7366999052464962,
+        "gpu_e2e": 24.675199994817376
+      }
     }
   ],
   "ntt": [
     {
       "n": 16384,
-      "cpu_ms": 34.149,
-      "gpu_ms": 5.622,
-      "speedup": 6.07,
-      "cpu_throughput_meps": 0.4798,
-      "gpu_throughput_meps": 2.9143
+      "mod": 998244353,
+      "verified": true,
+      "ms": {
+        "python": 32.535400008782744,
+        "numpy": 1.2821999844163656,
+        "gpu_cold": 2.983100013807416,
+        "gpu": 1.2876999098807573,
+        "gpu_e2e": 1.483700005337596
+      }
     },
     {
       "n": 65536,
-      "cpu_ms": 174.822,
-      "gpu_ms": 11.646,
-      "speedup": 15.01,
-      "cpu_throughput_meps": 0.3749,
-      "gpu_throughput_meps": 5.6273
+      "mod": 998244353,
+      "verified": true,
+      "ms": {
+        "python": 147.7735999505967,
+        "numpy": 5.819099955260754,
+        "gpu_cold": 4.399000201374292,
+        "gpu": 1.5036999247968197,
+        "gpu_e2e": 1.6948000993579626
+      }
     },
     {
       "n": 262144,
-      "cpu_ms": 733.527,
-      "gpu_ms": 44.619,
-      "speedup": 16.44,
-      "cpu_throughput_meps": 0.3574,
-      "gpu_throughput_meps": 5.8752
+      "mod": 998244353,
+      "verified": true,
+      "ms": {
+        "python": 671.1637999396771,
+        "numpy": 40.29629984870553,
+        "gpu_cold": 20.74290020391345,
+        "gpu": 1.6945998650044203,
+        "gpu_e2e": 2.3308999370783567
+      }
     },
     {
       "n": 1048576,
-      "cpu_ms": 3400.858,
-      "gpu_ms": 166.832,
-      "speedup": 20.38,
-      "cpu_throughput_meps": 0.3083,
-      "gpu_throughput_meps": 6.2852
+      "mod": 998244353,
+      "verified": true,
+      "ms": {
+        "python": 3182.28209996596,
+        "numpy": 277.03135006595403,
+        "gpu_cold": 119.22400002367795,
+        "gpu": 1.9305001478642225,
+        "gpu_e2e": 4.229600075632334
+      }
     }
   ],
   "msm": [
     {
       "n": 100,
-      "cpu_ms": 367.12,
-      "gpu_ms": 119.235,
-      "gpu_compute_ms": 119.136,
-      "mem_transfer_ms": 0.099,
-      "speedup": 3.08,
-      "cpu_throughput_keps": 0.27,
-      "gpu_throughput_keps": 0.84
-    },
-    {
-      "n": 500,
-      "cpu_ms": 1862.002,
-      "gpu_ms": 247.122,
-      "gpu_compute_ms": 247.024,
-      "mem_transfer_ms": 0.099,
-      "speedup": 7.53,
-      "cpu_throughput_keps": 0.27,
-      "gpu_throughput_keps": 2.02
+      "window_size": 5,
+      "verified": true,
+      "ms": {
+        "straus": 43.26099995523691,
+        "naive": 100.41880002245307,
+        "pippenger_cpu": 24.460799992084503,
+        "pippenger_gpu": 24.852799950167537
+      }
     },
     {
       "n": 1000,
-      "cpu_ms": 3652.263,
-      "gpu_ms": 414.226,
-      "gpu_compute_ms": 414.122,
-      "mem_transfer_ms": 0.105,
-      "speedup": 8.82,
-      "cpu_throughput_keps": 0.27,
-      "gpu_throughput_keps": 2.41
-    },
-    {
-      "n": 5000,
-      "cpu_ms": 18256.225,
-      "gpu_ms": 1662.432,
-      "gpu_compute_ms": 1662.326,
-      "mem_transfer_ms": 0.11,
-      "speedup": 10.98,
-      "cpu_throughput_keps": 0.27,
-      "gpu_throughput_keps": 3.01
+      "window_size": 7,
+      "verified": true,
+      "ms": {
+        "straus": 432.7614998910576,
+        "naive": 1000.6062500178814,
+        "pippenger_cpu": 145.66479995846748,
+        "pippenger_gpu": 143.61380017362535
+      }
     },
     {
       "n": 10000,
-      "cpu_ms": 36139.602,
-      "gpu_ms": 3093.38,
-      "gpu_compute_ms": 3093.232,
-      "mem_transfer_ms": 0.165,
-      "speedup": 11.68,
-      "cpu_throughput_keps": 0.28,
-      "gpu_throughput_keps": 3.23
+      "window_size": 10,
+      "verified": true,
+      "ms": {
+        "straus": 4321.376899955794,
+        "pippenger_cpu": 1041.6399999521673,
+        "pippenger_gpu": 1047.210199991241
+      }
     }
   ]
 }

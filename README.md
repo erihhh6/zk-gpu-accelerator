@@ -5,36 +5,47 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 
-> GPU-accelerated primitives for Zero-Knowledge proof generation (NTT + MSM) using NVIDIA CUDA via CuPy.
+> The building blocks of a zero-knowledge prover (BN254 field and curve arithmetic, NTT, MSM) in Python, with CUDA kernels (via CuPy) for modular arithmetic and the NTT, and benchmarks that measure what the GPU actually buys.
 
-![Speedup curve](results/speedup_curve.png)
-![Latency comparison](results/latency_comparison.png)
-![Throughput](results/throughput.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="results/speedup_curve_dark.png">
+  <img alt="GPU speedup over CPU code running the same algorithm. Field multiplication: 45.7x with data on the GPU, 1.4x including copies, at 10M elements. NTT: 143.5x and 65.5x at 2^20. MSM Pippenger: 1.0x at every size." src="results/speedup_curve.png">
+</picture>
 
 ---
 
 ## What this does
 
-Accelerates the two most expensive operations in ZK proof generation using NVIDIA CUDA, achieving **up to 45x speedup** over pure CPU:
+The two most expensive steps of a Groth16 or PLONK prover are the MSM and the NTT. This project implements both, plus the field arithmetic underneath them. It also measures each GPU path against CPU code that runs the same algorithm, and checks every result.
 
-| Operation | ZK Usage | CPU Algorithm | GPU Algorithm | Peak Speedup |
-|---|---|---|---|---|
-| **NTT** | Polynomial multiplication (PLONK, Groth16) | Cooley-Tukey iterative | Parallel butterfly (CuPy kernel) | **20x** |
-| **MSM** | Linear combinations of EC points (Groth16) | Naive (per-point double-and-add) | Pippenger (CPU buckets) + GPU window extraction | **12x** |
-| **Field** | Modular arithmetic building block | NumPy vectorized | CuPy ElementwiseKernel | **45x** |
+| Operation | ZK usage | What runs on the GPU | GPU speedup at the largest size measured |
+|---|---|---|---|
+| **Field multiplication** | Building block of everything else | The whole operation (CuPy kernel), for moduli below 2⁶³ | **45.7x** with data on the GPU, **1.4x** including copies (10M elements) |
+| **NTT** | Polynomial arithmetic (Groth16, PLONK) | Every butterfly stage, for moduli below 2⁶³ | **143.5x** with data on the GPU, **65.5x** including copies (2²⁰ elements) |
+| **MSM**, BN254 G1 | Groth16's linear combinations of curve points | Only the window-digit extraction | **1.0x** (10,000 points); all curve arithmetic is Python on the CPU |
 
-Tested on: **NVIDIA GeForce RTX 5050 Laptop GPU** (Compute Capability 12.0, 8 GB VRAM)
+Measured on an NVIDIA GeForce RTX 5050 Laptop GPU against NumPy on an AMD Ryzen 7 260; see [Benchmark results](#benchmark-results).
+
+### Scope and limits
+
+This is a tested prototype, not yet a GPU prover for BN254:
+
+- **The GPU kernels use 64-bit integers**, so they work over primes below 2⁶³; the benchmarks use 998244353. BN254's scalar field is 254 bits wide, so its NTT (`Radix2Domain`) currently runs on the CPU.
+- **The MSM gains are algorithmic.** Pippenger is 6.9x faster than the naive method at 1,000 points, and Jacobian coordinates made every MSM 18–28x faster. The GPU contributes nothing measurable yet.
+- **The baselines are fair, but they are not the fastest CPU code possible.** Each GPU path is compared with NumPy running the same algorithm, which is the right comparison for this package. Optimised native libraries (C++/Rust, multithreaded) would be considerably faster than NumPy and would shrink these ratios.
+
+The next step is 254-bit Montgomery arithmetic written in CUDA, which moves BN254's NTT and MSM point arithmetic onto the GPU.
 
 ---
 
 ## Background
 
-ZK proofs (Groth16, PLONK) spend **80–90% of prover time** in two operations:
+Most of a Groth16 or PLONK prover's time goes into two operations:
 
-- **MSM** (Multi-Scalar Multiplication) — given vectors of EC points P₁…Pₙ and scalars s₁…sₙ, compute Σ sᵢPᵢ. Accounts for ~**65%** of total proving time.
-- **NTT** (Number Theoretic Transform) — the FFT over a finite field, used for polynomial multiplication in the constraint system. Accounts for ~**22%** of total proving time.
+- **MSM** (multi-scalar multiplication): given curve points P₁…Pₙ and scalars s₁…sₙ, compute Σ sᵢPᵢ. It usually dominates proving time.
+- **NTT** (number-theoretic transform): the FFT over a finite field, used to multiply and divide the constraint polynomials.
 
-Both are *embarrassingly parallel* → ideal for GPU acceleration.
+Both apply the same operation to millions of independent values at each step: every butterfly within an NTT stage, and every point within an MSM window. That is why GPU provers target them.
 
 **Curve**: BN254 (aka alt_bn128) — the curve used by Ethereum's zkSNARK precompile.
 - Base field prime: `p = 21888242871839275222246405745257275088696311157297823662689037894645226208583`
@@ -42,37 +53,67 @@ Both are *embarrassingly parallel* → ideal for GPU acceleration.
 
 ---
 
-## Benchmark Results
+## Benchmark results
 
-> Hardware: NVIDIA GeForce RTX 5050 Laptop GPU | CUDA 12.8 | Python 3.13
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="results/latency_comparison_dark.png">
+  <img alt="Time per call by implementation, log scales. Field multiplication: the GPU with data on the device is fastest, while the GPU including copies roughly matches NumPy from 1M elements up. NTT: GPU time stays near 1-4 ms up to 2^20, against 277 ms for NumPy and 3.2 s for pure Python. MSM: Pippenger is fastest, and its CPU and GPU-digit lines coincide." src="results/latency_comparison.png">
+</picture>
 
-### Field Arithmetic (modular multiplication, MOD = 998244353)
+> Measured at commit `1c9218f` with a clean working tree, on AC power. **GPU:** NVIDIA GeForce RTX 5050 Laptop GPU (compute capability 12.0, 8 GiB), CUDA runtime 12.9, CuPy 14.0.1. **CPU:** AMD Ryzen 7 260 (16 logical cores). **Software:** Windows 11, Python 3.13.9, NumPy 2.3.4. The raw numbers and full metadata are in [`results/all_results.json`](results/all_results.json).
 
-| N | CPU (ms) | GPU (ms) | Speedup | GPU Throughput |
-|---|---|---|---|---|
-| 10,000 | 0.04 | 0.02 | 2.1x | 526 M ops/s |
-| 100,000 | 0.23 | 0.03 | 8.4x | 3,704 M ops/s |
-| 1,000,000 | 3.56 | 0.08 | **45.1x** | 12,658 M ops/s |
-| 10,000,000 | 35.27 | 0.84 | **42.1x** | 11,947 M ops/s |
+How to read the tables:
 
-### NTT — Cooley-Tukey (MOD = 998244353)
+- **GPU** means the input is already on the GPU and the output stays there. That is the cost for a prover that keeps its data on the device.
+- **GPU + copies** means the input starts in host memory and the output is copied back.
+- Every time is a median in milliseconds, and every implementation's output was checked against a reference before its time was accepted (see [Method](#method)).
+- The largest sizes are stable to within about 10% between runs. The smallest sizes, where single calls take microseconds, can vary by up to 2x: field multiplication at 100,000 elements measured between 7.5x (the run below) and 14.0x in four runs.
 
-| N | CPU (ms) | GPU (ms) | Speedup | GPU Throughput |
-|---|---|---|---|---|
-| 2¹⁴ = 16,384 | 34.1 | 5.6 | 6.1x | 2.91 M elem/s |
-| 2¹⁶ = 65,536 | 174.8 | 11.6 | 15.0x | 5.63 M elem/s |
-| 2¹⁸ = 262,144 | 733.5 | 44.6 | 16.4x | 5.88 M elem/s |
-| 2²⁰ = 1,048,576 | 3,400.9 | 166.8 | **20.4x** | 6.29 M elem/s |
+### Field multiplication (mod 998244353)
 
-### MSM — BN254 G1 (Pippenger window=8 on GPU)
+| N | NumPy (ms) | GPU (ms) | GPU + copies (ms) | GPU speedup | With copies |
+|---:|---:|---:|---:|---:|---:|
+| 10,000 | 0.019 | 0.014 | 0.148 | 1.3x | 0.13x |
+| 100,000 | 0.171 | 0.023 | 0.406 | 7.5x | 0.42x |
+| 1,000,000 | 3.26 | 0.052 | 2.69 | 62.4x | 1.2x |
+| 10,000,000 | 33.7 | 0.737 | 24.7 | 45.7x | 1.4x |
 
-| N | CPU (ms) | GPU (ms) | Speedup | Mem Transfer |
-|---|---|---|---|---|
-| 100 | 367.1 | 119.2 | 3.1x | 0.10 ms |
-| 500 | 1,862.0 | 247.1 | 7.5x | 0.10 ms |
-| 1,000 | 3,652.3 | 414.2 | 8.8x | 0.11 ms |
-| 5,000 | 18,256.2 | 1,662.4 | 11.0x | 0.11 ms |
-| 10,000 | 36,139.6 | 3,093.4 | **11.7x** | 0.17 ms |
+One multiplication per element is too little work to pay for moving the data, so even at 10 million elements the GPU including copies is only 1.4x faster. Field kernels pay off inside a longer computation whose data stays on the GPU.
+
+### NTT (radix-2 Cooley-Tukey, mod 998244353)
+
+| N | Pure Python (ms) | NumPy (ms) | GPU (ms) | GPU + copies (ms) | GPU first call (ms) | GPU speedup | With copies |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2¹⁴ | 32.5 | 1.28 | 1.29 | 1.48 | 2.98 | 1.00x | 0.86x |
+| 2¹⁶ | 148 | 5.82 | 1.50 | 1.69 | 4.40 | 3.9x | 3.4x |
+| 2¹⁸ | 671 | 40.3 | 1.69 | 2.33 | 20.7 | 23.8x | 17.3x |
+| 2²⁰ | 3,182 | 277 | 1.93 | 4.23 | 119 | 143.5x | 65.5x |
+
+- **The GPU time hardly grows** between 2¹⁴ and 2²⁰. It costs a near-constant 0.09–0.10 ms per butterfly stage, and there are log₂ N stages. Each stage dispatches about six separate kernels from Python, so the time goes into that per-stage overhead rather than arithmetic. A single fused kernel would remove most of it.
+- **The first call for each size** builds the twiddle table and bit-reversal index on the GPU and caches them; later calls reuse them. The NumPy baseline caches its tables the same way.
+- **Pure Python** (`zkgpu.ntt.ntt`) is shown for scale and as the reference result, not as a baseline.
+
+### MSM (BN254 G1, uniformly random 254-bit scalars)
+
+| N | Window | Naive (ms) | Straus/Shamir (ms) | Pippenger, CPU (ms) | Pippenger, GPU digits (ms) | GPU contribution |
+|---:|---:|---:|---:|---:|---:|---:|
+| 100 | 5 | 100 | 43.3 | 24.5 | 24.9 | 0.98x |
+| 1,000 | 7 | 1,001 | 433 | 146 | 144 | 1.0x |
+| 10,000 | 10 | — | 4,321 | 1,042 | 1,047 | 0.99x |
+
+- **All the point arithmetic is Python integers on the CPU, in every column.** The differences between columns are algorithmic. Pippenger is 4.1x faster than naive at 100 points and 6.9x at 1,000, and it is 4.1x faster than Straus/Shamir at 10,000.
+- **The window size** follows Pippenger's cost model for each N. A fixed w = 8 would make it look slower than it is at small N.
+- **Moving digit extraction to the GPU changes nothing** (0.98–1.0x, within noise), because the bucket accumulation (point additions) dominates the cost.
+- **Naive is skipped at 10,000 points.** It costs a steady 1.0 ms per point, so about 10 s.
+
+### Method
+
+- Each implementation is timed as the median of repeated calls after one untimed warm-up call, within a time budget.
+- If the median exceeds 1.25x the fastest sample, a sign of interference from other processes, the measurement is repeated, up to three attempts.
+- GPU timings synchronise the device before the clock stops.
+- The NumPy NTT is the same algorithm as the GPU version, vectorised one stage at a time, with the same per-size caches.
+
+The details are in `benchmarks/_harness.py`. To reproduce on your own machine, see [Run benchmarks](#run-benchmarks).
 
 ---
 
@@ -313,11 +354,12 @@ zk-gpu-accelerator/
 │   ├── msm.py             # MSM CPU — naive + Straus/Shamir double-and-add
 │   └── msm_gpu.py         # MSM — Pippenger (CPU buckets) + GPU window extraction
 ├── benchmarks/
+│   ├── _harness.py        # timing method, result checks, run metadata
 │   ├── bench_field.py
-│   ├── bench_ntt.py
+│   ├── bench_ntt.py       # includes the NumPy NTT baseline
 │   ├── bench_msm.py
-│   ├── run_all.py
-│   └── plot_results.py
+│   ├── run_all.py         # runs all three, writes one JSON file
+│   └── plot_results.py    # charts, light and dark
 ├── tests/
 │   ├── known_bugs.py        # Strict-xfail marker for documented, unfixed bugs
 │   ├── test_field.py        # Fp arithmetic (CPU)
@@ -326,12 +368,13 @@ zk-gpu-accelerator/
 │   ├── test_ntt.py          # NTT across moduli, roots-of-unity known answer, GPU
 │   ├── test_domain.py       # domains: snarkjs/arkworks roots, cosets, Groth16 quotient
 │   ├── test_msm.py          # naive / Shamir / Pippenger MSM, GPU + fallback paths
-│   └── test_gpu_backend.py  # GPU detection reports why it is disabled
+│   ├── test_gpu_backend.py  # GPU detection reports why it is disabled
+│   └── test_benchmarks.py   # harness runs end to end; baselines match references
 ├── scripts/
 │   └── check_gpu.py   # Layer-by-layer GPU setup diagnostic
 ├── demo/
 │   └── prover_simulation.py
-└── results/           # auto-generated JSON + PNG charts
+└── results/           # the benchmark run quoted above: JSON + charts (light and dark)
 ```
 
 The `src/` layout means the code is only importable once installed (`pip install -e .`), so tests always exercise the package as users get it rather than whatever happens to be in the working directory.
@@ -342,11 +385,11 @@ The `src/` layout means the code is only importable once installed (`pip install
 
 - **Field**: BN254 scalar field (r ≈ 2²⁵⁴). All Fp ops use Python's built-in `pow()` for fast modular exponentiation. The GPU field ops (`zkgpu/field_gpu.py`) accept any modulus `2 ≤ mod < 2⁶³` and any int64 inputs, which they reduce first. Products use a plain int64 multiply up to `mod ≤ 3,037,000,500`, and an exact 128-bit-wide routine above that, built on `__umul64hi` because NVRTC on Windows has no `__int128`. The GPU benchmark uses `MOD = 998244353`.
 - **NTT**: Cooley-Tukey iterative with bit-reversal permutation. The default modulus is `998244353 = 119·2²³ + 1` (N ≤ 2²³), but any odd prime works up to its 2-adicity, including BN254's scalar field r (2-adicity 28, N ≤ 2²⁸). Roots of unity come from the field's smallest quadratic non-residue, which yields primitive power-of-two roots without factoring p − 1, and every root is checked to be primitive. The GPU version (`zkgpu/ntt_gpu.py`) handles primes below 2⁶³: it caches its twiddle table and bit-reversal index on the device for each size, and uses `zkgpu/field_gpu.py` for exact modular arithmetic. BN254's r does not fit in int64, so it is CPU-only for now.
-- **MSM**: Naive and Straus/Shamir simultaneous double-and-add on CPU (one shared accumulator: ~254 doublings in total instead of N·254, about 3× faster than naive for 254-bit scalars); Pippenger bucket method: scalars are reduced mod r and split into four 64-bit limbs, one GPU kernel extracts every window digit at once (a single device-to-host copy), and bucket accumulation plus Horner's-rule window combination (~254 doublings) stay on the CPU. All BN254 point arithmetic uses Python's arbitrary-precision integers (254-bit coordinates).
+- **MSM**: Naive and Straus/Shamir simultaneous double-and-add on CPU (one shared accumulator: ~254 doublings in total instead of N·254, 2.3× faster than naive for 254-bit scalars in the benchmark above); Pippenger bucket method: scalars are reduced mod r and split into four 64-bit limbs, one GPU kernel extracts every window digit at once (a single device-to-host copy), and bucket accumulation plus Horner's-rule window combination (~254 doublings) stay on the CPU. All BN254 point arithmetic uses Python's arbitrary-precision integers (254-bit coordinates).
 - **Curve arithmetic**: `Point` is affine, but scalar multiplication and every MSM run in Jacobian coordinates (X, Y, Z) ↦ (X/Z², Y/Z³). Those additions and doublings need no modular inverse, so a whole chain of operations pays for one inverse at the end, when converting back. The formulas are the Explicit-Formulas Database's a = 0 versions (`dbl-2009-l`, `add-2007-bl`, `madd-2007-bl`). Remaining inverses use `pow(a, -1, p)` (extended Euclid, about 42 multiplications) instead of Fermat's `a^(p−2)` (about 251). Together these made scalar multiplication about 30× faster and the MSMs 18–28× faster than affine arithmetic, with identical results. Every result is converted back through `Point`, so it is re-validated to lie on the curve.
 - **GPU kernels**: Written with CuPy's `ElementwiseKernel` (CUDA C++ compiled at runtime via nvrtc). Works without the full CUDA Toolkit — only nvrtc is needed (bundled with PyTorch on Windows).
 - **Fallback**: GPU availability is decided once, at import, in `zkgpu/gpu_backend.py`. When it is unavailable, every GPU function falls back to NumPy/CPU and emits a `GpuFallbackWarning` naming the reason, so no code changes are needed on CPU-only machines.
-- **Benchmarking**: Median of 3 runs; first GPU run discarded (CuPy JIT warmup).
+- **Benchmarking**: See [Method](#method). Kernels are compiled before any timing starts, so the timings never include CuPy's JIT compilation.
 
 ---
 

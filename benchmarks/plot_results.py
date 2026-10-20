@@ -143,10 +143,19 @@ def _set_size_ticks(ax: Axes, sizes: list[int], bench: str) -> None:
     ax.xaxis.set_minor_locator(NullLocator())
 
 
-def _legend(ax: Axes, theme: dict[str, Any]) -> None:
+def _series_count(ax: Axes) -> int:
     # Count data series only: reference lines carry matplotlib's "_child" labels
-    series = [line for line in ax.get_lines() if not line.get_label().startswith("_")]
-    if len(series) >= 2:  # one series needs no legend: the panel title names it
+    return sum(not line.get_label().startswith("_") for line in ax.get_lines())
+
+
+def _legend_headroom(ax: Axes, entries: int) -> None:
+    """Raise a log y-axis's top so an upper-left legend of *entries* rows clears the data."""
+    lo, hi = ax.get_ylim()
+    ax.set_ylim(lo, hi * (hi / lo) ** (0.06 * entries))
+
+
+def _legend(ax: Axes, theme: dict[str, Any]) -> None:
+    if _series_count(ax) >= 2:  # one series needs no legend: the panel title names it
         leg = ax.legend(loc="upper left", frameon=False, fontsize=8, handlelength=1.6)
         for text in leg.get_texts():
             text.set_color(theme["ink_secondary"])
@@ -200,6 +209,8 @@ def plot_latency(results: dict[str, Any], theme: dict[str, Any]) -> Any:
         if sizes:
             _set_size_ticks(ax, sizes, bench)
         ax.set_yscale("log")
+        if _series_count(ax) >= 2:
+            _legend_headroom(ax, _series_count(ax))
         ax.yaxis.set_major_locator(LogLocator(base=10))
         ax.yaxis.set_minor_formatter(NullFormatter())
         ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:g}"))
@@ -284,6 +295,8 @@ def _direct_label_endpoints(ax: Axes, theme: dict[str, Any], plotted: list[list[
             va="center",
             fontsize=8,
             color=theme["ink_secondary"],
+            # A ~1x end sits on the 1x reference line; the backing keeps the line out of the text
+            bbox={"boxstyle": "square,pad=0.15", "facecolor": theme["surface"], "edgecolor": "none"},
         )
 
 
