@@ -290,7 +290,7 @@ zk-gpu-accelerator/
 
 ## Implementation Notes
 
-- **Field**: BN254 scalar field (r ≈ 2²⁵⁴). All Fp ops use Python's built-in `pow()` for fast modular exponentiation. GPU benchmark uses `MOD = 998244353` (int64-safe).
+- **Field**: BN254 scalar field (r ≈ 2²⁵⁴). All Fp ops use Python's built-in `pow()` for fast modular exponentiation. The GPU field ops (`src/field_gpu.py`) accept any modulus `2 ≤ mod < 2⁶³` and any int64 inputs, which they reduce first. Products use a plain int64 multiply up to `mod ≤ 3,037,000,500`, and an exact 128-bit-wide routine above that, built on `__umul64hi` because NVRTC on Windows has no `__int128`. The GPU benchmark uses `MOD = 998244353`.
 - **NTT**: Cooley-Tukey iterative with bit-reversal permutation. Modulus `998244353 = 119·2²³ + 1` (NTT-friendly prime supporting up to N = 2²³). GPU butterfly uses CuPy `ElementwiseKernel`. BN254's scalar field is NTT-friendly too (2-adicity 28, sizes up to 2²⁸), but roots of unity are currently derived from a hardcoded primitive root 3, which is invalid for it, so the NTT is only correct for moduli like 998244353 for now.
 - **MSM**: Naive and bit-serial double-and-add on CPU; Pippenger bucket method with only the scalar window extraction on the GPU (bucket accumulation stays on the CPU). All BN254 point arithmetic uses Python's arbitrary-precision integers (254-bit coordinates).
 - **GPU kernels**: Written with CuPy's `ElementwiseKernel` (CUDA C++ compiled at runtime via nvrtc). Works without the full CUDA Toolkit — only nvrtc is needed (bundled with PyTorch on Windows).
