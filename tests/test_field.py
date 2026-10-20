@@ -2,6 +2,7 @@
 
 import pytest
 from src.field import Fp, FIELD_MODULUS, batch_mul, batch_add
+from tests.known_bugs import known_bug
 
 
 # ------------------------------------------------------------------
@@ -67,6 +68,14 @@ def test_fp_equality():
 
 def test_fp_repr():
     assert "Fp(" in repr(Fp(42))
+
+
+@known_bug("Fp arithmetic with plain ints raises AttributeError", raises=AttributeError)
+def test_fp_interoperates_with_int():
+    assert Fp(3) + 4 == Fp(7)
+    assert 4 + Fp(3) == Fp(7)
+    assert Fp(3) * 2 == Fp(6)
+    assert 10 - Fp(3) == Fp(7)
 
 
 # ------------------------------------------------------------------

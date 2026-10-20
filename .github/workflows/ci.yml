@@ -34,7 +34,7 @@ jobs:
 
       - name: Run tests (CPU-only, GPU tests auto-skip)
         run: |
-          python -m pytest tests/ -v --tb=short
+          python -m pytest tests/ -v --tb=short -rxs
 
       - name: Smoke-test each src module
         run: |

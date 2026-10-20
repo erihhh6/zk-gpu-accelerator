@@ -1,0 +1,119 @@
+"""tests/test_curve.py — BN254 G1 group law, scalar multiplication and known answers."""
+
+import dataclasses
+import random
+
+import pytest
+
+from src.curve import G, P, Point, scalar_mul
+from src.field import FIELD_MODULUS as R  # BN254 G1 is a cyclic group of prime order r
+from tests.known_bugs import known_bug
+
+O = Point.identity()
+
+# 2·G on alt_bn128 as published by py_ecc, an independent reference implementation.
+TWO_G = Point(
+    1368015179489954701390400359078579693043519447331113978918064868415326638035,
+    9918110051302171585080402603319702774565515993150576347155970296011118125764,
+)
+
+
+@pytest.fixture(scope="module")
+def random_points():
+    rng = random.Random(2024)
+    return [G * rng.randrange(1, R) for _ in range(3)]
+
+
+# ------------------------------------------------------------------
+# Group law
+# ------------------------------------------------------------------
+
+
+def test_generator_is_on_curve():
+    assert G.is_on_curve()
+    assert (G.y**2 - G.x**3 - 3) % P == 0
+
+
+def test_identity_is_neutral():
+    assert G + O == G
+    assert O + G == G
+    assert O + O == O
+    assert O.is_on_curve()
+
+
+def test_negation():
+    assert -G == Point(1, P - 2)
+    assert G + (-G) == O
+    assert -O == O
+
+
+def test_doubling_matches_reference():
+    assert G.double() == TWO_G
+    assert G + G == TWO_G
+    assert TWO_G.is_on_curve()
+
+
+def test_addition_is_commutative_and_associative(random_points):
+    a, b, c = random_points
+    assert a + b == b + a
+    assert (a + b) + c == a + (b + c)
+    assert all(p.is_on_curve() for p in (a, b, c, a + b, a + b + c))
+
+
+# ------------------------------------------------------------------
+# Scalar multiplication
+# ------------------------------------------------------------------
+
+
+def test_group_order_is_r():
+    """r·G = O pins both the curve constants and the scalar field modulus."""
+    assert G * R == O
+    assert G * (R + 1) == G
+    assert G * (R - 1) == -G
+
+
+def test_scalar_mul_small_values():
+    assert G * 0 == O
+    assert G * 1 == G
+    assert G * 2 == TWO_G
+    assert 3 * G == G * 3 == scalar_mul(G, 3) == G + G + G
+
+
+def test_scalar_mul_is_a_homomorphism():
+    rng = random.Random(7)
+    k1, k2 = rng.randrange(R), rng.randrange(R)
+    assert G * (k1 + k2) == G * k1 + G * k2
+    assert (G * k1) * k2 == G * (k1 * k2 % R)
+
+
+def test_negative_scalar():
+    assert G * -5 == -(G * 5)
+    assert G * -5 + G * 5 == O
+
+
+def test_hash_is_consistent_with_equality():
+    assert hash(Point(1, 2)) == hash(G)
+    assert len({G, Point(1, 2), TWO_G}) == 2
+
+
+# ------------------------------------------------------------------
+# Known bugs
+# ------------------------------------------------------------------
+
+
+@known_bug("Point() accepts coordinates that are not on the curve", raises=pytest.fail.Exception)
+def test_rejects_points_off_the_curve():
+    with pytest.raises(ValueError):
+        Point(1, 3)
+
+
+@known_bug("coordinates are not reduced mod P, so equal points compare unequal", raises=AssertionError)
+def test_coordinates_are_canonical():
+    assert Point(1, 2 + P) == G
+
+
+@known_bug("Point is a mutable dataclass that defines __hash__", raises=pytest.fail.Exception)
+def test_points_are_immutable():
+    point = Point(1, 2)  # never mutate the shared generator G
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        point.x = 5

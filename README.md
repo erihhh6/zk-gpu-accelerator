@@ -242,8 +242,12 @@ python demo/prover_simulation.py
 ### Run tests
 
 ```bash
-pytest tests/ -v
+pytest tests/ -v -rxs
 ```
+
+- Tests marked `gpu` skip automatically when no usable GPU is found, and the skip message names the reason.
+- Tests reported as `xfail` are **known bugs**: each one asserts the *correct* behaviour and is expected to fail until the bug is fixed. They are strict, so the commit that fixes a bug must also remove its `known_bug` marker (see `tests/known_bugs.py`).
+- `-rxs` prints the reason for every skip and xfail.
 
 ---
 
@@ -267,9 +271,12 @@ zk-gpu-accelerator/
 │   ├── run_all.py
 │   └── plot_results.py
 ├── tests/
-│   ├── test_field.py  # 15 correctness tests (all pass)
-│   ├── test_ntt.py    # 9 tests incl. GPU round-trip (all pass)
-│   ├── test_msm.py    # 8 tests incl. GPU vs CPU equality (all pass)
+│   ├── known_bugs.py        # Strict-xfail marker for documented, unfixed bugs
+│   ├── test_field.py        # Fp arithmetic (CPU)
+│   ├── test_field_gpu.py    # GPU field ops vs Python ints, GPU + fallback paths
+│   ├── test_curve.py        # BN254 group law, py_ecc known answers
+│   ├── test_ntt.py          # NTT across moduli, roots-of-unity known answer, GPU
+│   ├── test_msm.py          # naive / Shamir / Pippenger MSM, GPU + fallback paths
 │   └── test_gpu_backend.py  # GPU detection reports why it is disabled
 ├── scripts/
 │   └── check_gpu.py   # Layer-by-layer GPU setup diagnostic
