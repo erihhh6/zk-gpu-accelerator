@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import operator
 from collections.abc import Iterable
+from typing import SupportsIndex
 
 import numpy as np
 
@@ -82,7 +83,8 @@ def _window_digits(scalars: list[int], window_size: int, num_windows: int) -> li
     limbs = np.frombuffer(packed, dtype="<u8").astype(np.uint64).reshape(n, _LIMBS)
     digits = cp.empty((num_windows, n), dtype=cp.int64)
     _window_digits_kernel(cp.asarray(limbs), n, window_size, digits)
-    return digits.get().tolist()  # one transfer for every window
+    digit_rows: list[list[int]] = digits.get().tolist()  # one transfer for every window
+    return digit_rows
 
 
 # ------------------------------------------------------------------
@@ -93,7 +95,7 @@ def _window_digits(scalars: list[int], window_size: int, num_windows: int) -> li
 def _window_sum(points: list[Point], digits: list[int], bucket_count: int) -> Point:
     """Σ digitᵢ·Pᵢ for one window, using 2^w buckets instead of N scalar multiplications."""
     buckets = [Point.identity()] * bucket_count  # bucket 0 contributes nothing
-    for point, digit in zip(points, digits):
+    for point, digit in zip(points, digits, strict=True):
         if digit:
             buckets[digit] = buckets[digit] + point
 
@@ -107,7 +109,7 @@ def _window_sum(points: list[Point], digits: list[int], bucket_count: int) -> Po
     return total
 
 
-def _as_ints(values: Iterable, name: str) -> list[int]:
+def _as_ints(values: Iterable[SupportsIndex], name: str) -> list[int]:
     """Plain Python ints; operator.index rejects floats instead of truncating them."""
     try:
         return [operator.index(v) for v in values]
@@ -158,13 +160,12 @@ def msm_pippenger_gpu(
     reduced = [s % _GROUP_ORDER for s in _as_ints(scalars, "scalars")]
     if not len(xs) == len(ys) == len(reduced):
         raise ValueError(
-            f"Length mismatch: {len(xs)} x-coordinates, {len(ys)} y-coordinates, "
-            f"{len(reduced)} scalars."
+            f"Length mismatch: {len(xs)} x-coordinates, {len(ys)} y-coordinates, {len(reduced)} scalars."
         )
     if not reduced:
         return Point.identity()
 
-    points = [Point(x, y) for x, y in zip(xs, ys)]
+    points = [Point(x, y) for x, y in zip(xs, ys, strict=True)]
     num_windows = -(-_SCALAR_BITS // window_size)  # ceil(254 / w)
     if not _gpu_available:
         warn_cpu_fallback("msm_pippenger_gpu", "CPU window-digit extraction")

@@ -1,0 +1,30 @@
+# Runs the same checks as CI before every commit.
+#
+# One-time setup, from the repo root:
+#   pip install -e ".[dev]"
+#   pre-commit install
+# Run on everything manually:  pre-commit run --all-files
+#
+# The hooks are "local" and call the ruff/mypy versions pinned in pyproject.toml's
+# dev extra, so local runs, pre-commit and CI can never disagree about versions.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check (lint, auto-fix safe issues)
+        entry: python -m ruff check --fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      - id: ruff-format
+        name: ruff format
+        entry: python -m ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+      - id: mypy
+        name: mypy (strict, zkgpu package)
+        entry: python -m mypy
+        language: system
+        types: [python]
+        pass_filenames: false  # mypy checks the files configured in pyproject.toml

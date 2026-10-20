@@ -25,7 +25,8 @@ SIZES = [100, 500, 1000, 5000, 10_000]
 RUNS = 3
 
 try:
-    from zkgpu.msm_gpu import msm_pippenger_gpu, _gpu_available
+    from zkgpu.msm_gpu import _gpu_available, msm_pippenger_gpu
+
     if _gpu_available:
         import cupy as cp
 except Exception:
@@ -72,7 +73,7 @@ def benchmark_size(n: int) -> dict:
         for _ in range(RUNS):
             # Scalar host→device transfer time
             t_xfer_start = time.perf_counter()
-            sc_gpu = cp.array(sc_np)
+            cp.array(sc_np)  # copied only to time the transfer; the run below does its own
             cp.cuda.Stream.null.synchronize()
             t_xfer_end = time.perf_counter()
 

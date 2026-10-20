@@ -1,0 +1,7 @@
+# Store text files with LF line endings and check them out with LF everywhere.
+# Without this, Windows clones (core.autocrlf=true) warn "LF will be replaced by
+# CRLF" on every change, and a stray CRLF commit would show up as a whole-file diff.
+* text=auto eol=lf
+
+# Benchmark charts: never alter their bytes
+*.png binary

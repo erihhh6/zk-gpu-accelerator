@@ -22,7 +22,8 @@ SIZES = [10_000, 100_000, 1_000_000, 10_000_000]
 RUNS = 3
 
 try:
-    from zkgpu.field_gpu import gpu_batch_mul, _gpu_available
+    from zkgpu.field_gpu import _gpu_available, gpu_batch_mul
+
     if _gpu_available:
         import cupy as cp
 except Exception:

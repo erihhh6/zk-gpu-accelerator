@@ -25,12 +25,14 @@ import numpy as np
 
 from zkgpu.curve import G
 from zkgpu.msm import msm_naive
-from zkgpu.ntt import ntt as ntt_cpu, MOD as NTT_MOD
+from zkgpu.ntt import MOD as NTT_MOD, ntt as ntt_cpu
 
 try:
     import cupy as cp
-    from zkgpu.ntt_gpu import ntt_gpu, _gpu_available as _ntt_gpu_ok
-    from zkgpu.msm_gpu import msm_pippenger_gpu, _gpu_available as _msm_gpu_ok
+
+    from zkgpu.msm_gpu import _gpu_available as _msm_gpu_ok, msm_pippenger_gpu
+    from zkgpu.ntt_gpu import _gpu_available as _ntt_gpu_ok, ntt_gpu
+
     _gpu_available = _ntt_gpu_ok and _msm_gpu_ok
 except ImportError:
     _gpu_available = False

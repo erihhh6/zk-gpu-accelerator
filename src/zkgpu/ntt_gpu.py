@@ -52,7 +52,7 @@ _CACHE_SIZE = 16
 
 
 @functools.lru_cache(maxsize=_CACHE_SIZE)
-def _bit_reverse_index(n: int) -> "cp.ndarray":
+def _bit_reverse_index(n: int) -> cp.ndarray:
     """Device array rev where rev[i] is i with its log2(n) bits reversed."""
     bits = n.bit_length() - 1
     idx = np.arange(n, dtype=np.int64)
@@ -64,7 +64,7 @@ def _bit_reverse_index(n: int) -> "cp.ndarray":
 
 
 @functools.lru_cache(maxsize=_CACHE_SIZE)
-def _twiddle_table(n: int, mod: int, invert: bool) -> "cp.ndarray":
+def _twiddle_table(n: int, mod: int, invert: bool) -> cp.ndarray:
     """Device array [ω^0, ω^1, ..., ω^(n/2 - 1)] for ω = ω_n, or ω_n^-1 when inverting."""
     omega = get_ntt_root(n, mod)
     if invert:
@@ -84,10 +84,10 @@ def _twiddle_table(n: int, mod: int, invert: bool) -> "cp.ndarray":
 
 
 def ntt_gpu(
-    a: "cp.ndarray",
+    a: cp.ndarray,
     mod: int,
     invert: bool = False,
-) -> "cp.ndarray":
+) -> cp.ndarray:
     """
     Cooley-Tukey NTT on GPU using CuPy vectorized butterflies.
 
@@ -115,7 +115,7 @@ def ntt_gpu(
     if not _gpu_available:
         warn_cpu_fallback("ntt_gpu", "the CPU NTT")
         a_list = a.tolist() if hasattr(a, "tolist") else list(a)
-        return np.array(ntt_cpu(a_list, mod, invert), dtype=np.int64)  # type: ignore[return-value]
+        return np.array(ntt_cpu(a_list, mod, invert), dtype=np.int64)
 
     n = len(a)
     if n & (n - 1):  # lets n == 0 through

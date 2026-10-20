@@ -8,7 +8,7 @@ import pytest
 from zkgpu.curve import G, P, Point, scalar_mul
 from zkgpu.field import FIELD_MODULUS as R  # BN254 G1 is a cyclic group of prime order r
 
-O = Point.identity()
+INF = Point.identity()
 
 # 2·G on alt_bn128 as published by py_ecc, an independent reference implementation.
 TWO_G = Point(
@@ -34,16 +34,16 @@ def test_generator_is_on_curve():
 
 
 def test_identity_is_neutral():
-    assert G + O == G
-    assert O + G == G
-    assert O + O == O
-    assert O.is_on_curve()
+    assert G + INF == G
+    assert INF + G == G
+    assert INF + INF == INF
+    assert INF.is_on_curve()
 
 
 def test_negation():
-    assert -G == Point(1, P - 2)
-    assert G + (-G) == O
-    assert -O == O
+    assert Point(1, P - 2) == -G
+    assert G + (-G) == INF
+    assert -INF == INF
 
 
 def test_doubling_matches_reference():
@@ -66,13 +66,13 @@ def test_addition_is_commutative_and_associative(random_points):
 
 def test_group_order_is_r():
     """r·G = O pins both the curve constants and the scalar field modulus."""
-    assert G * R == O
+    assert G * R == INF
     assert G * (R + 1) == G
     assert G * (R - 1) == -G
 
 
 def test_scalar_mul_small_values():
-    assert G * 0 == O
+    assert G * 0 == INF
     assert G * 1 == G
     assert G * 2 == TWO_G
     assert 3 * G == G * 3 == scalar_mul(G, 3) == G + G + G
@@ -87,7 +87,7 @@ def test_scalar_mul_is_a_homomorphism():
 
 def test_negative_scalar():
     assert G * -5 == -(G * 5)
-    assert G * -5 + G * 5 == O
+    assert G * -5 + G * 5 == INF
 
 
 def test_hash_is_consistent_with_equality():

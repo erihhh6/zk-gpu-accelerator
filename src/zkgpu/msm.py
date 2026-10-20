@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from zkgpu.curve import Point
 
-
 # ------------------------------------------------------------------
 # MSM implementations
 # ------------------------------------------------------------------
@@ -31,11 +30,9 @@ def msm_naive(points: list[Point], scalars: list[int]) -> Point:
     Correct and simple — used as the reference result for testing.
     """
     if len(points) != len(scalars):
-        raise ValueError(
-            f"Length mismatch: {len(points)} points vs {len(scalars)} scalars."
-        )
+        raise ValueError(f"Length mismatch: {len(points)} points vs {len(scalars)} scalars.")
     result = Point.identity()
-    for point, scalar in zip(points, scalars):
+    for point, scalar in zip(points, scalars, strict=True):
         result = result + point * scalar
     return result
 
@@ -61,15 +58,13 @@ def msm_double_and_add(points: list[Point], scalars: list[int]) -> Point:
         for each i with bit `bit` of sᵢ set: result += Pᵢ
     """
     if len(points) != len(scalars):
-        raise ValueError(
-            f"Length mismatch: {len(points)} points vs {len(scalars)} scalars."
-        )
+        raise ValueError(f"Length mismatch: {len(points)} points vs {len(scalars)} scalars.")
 
     # Fold signs into the points (-k·P = k·(-P)) so the bit walk only ever sees
     # non-negative scalars; Python's >> on a negative int never reaches 0.
     terms = [
         (-point, -scalar) if scalar < 0 else (point, scalar)
-        for point, scalar in zip(points, scalars)
+        for point, scalar in zip(points, scalars, strict=True)
     ]
     max_bits = max((scalar.bit_length() for _, scalar in terms), default=0)
 

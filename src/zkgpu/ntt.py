@@ -71,7 +71,7 @@ def _is_probable_prime(n: int) -> bool:
     return True
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def quadratic_non_residue(mod: int) -> int:
     """
     Smallest quadratic non-residue g of F_mod, the generator of every NTT root.
@@ -112,16 +112,14 @@ def get_ntt_root(n: int, mod: int, non_residue: int | None = None) -> int:
     g = default_g if non_residue is None else non_residue
     if (mod - 1) % n != 0:
         raise ValueError(
-            f"NTT of size {n} not supported for mod={mod}: "
-            f"(mod-1) = {mod-1} is not divisible by n."
+            f"NTT of size {n} not supported for mod={mod}: (mod-1) = {mod - 1} is not divisible by n."
         )
     omega = pow(g, (mod - 1) // n, mod)
     # Primitive iff ω^(n/2) = -1. Always true for a non-residue; this catches an
     # explicit non_residue that is really a residue (as 3 is mod BN254's r).
     if n > 1 and pow(omega, n // 2, mod) != mod - 1:
         raise ValueError(
-            f"{g} gives no primitive {n}-th root of unity mod {mod}; "
-            "it must be a quadratic non-residue"
+            f"{g} gives no primitive {n}-th root of unity mod {mod}; it must be a quadratic non-residue"
         )
     return omega
 
@@ -227,7 +225,7 @@ def polynomial_mul(p1: list[int], p2: list[int], mod: int = MOD) -> list[int]:
 
     fa = ntt(a, mod)
     fb = ntt(b, mod)
-    fc = [(x * y) % mod for x, y in zip(fa, fb)]
+    fc = [(x * y) % mod for x, y in zip(fa, fb, strict=True)]
     result = ntt(fc, mod, invert=True)
 
     # Trim trailing zeros

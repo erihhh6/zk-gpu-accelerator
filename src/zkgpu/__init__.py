@@ -18,10 +18,10 @@ only happen for callers that actually want the GPU paths.
 
 __version__ = "0.1.0"  # single source of truth; pyproject.toml reads it
 
-from zkgpu.field import Fp, FIELD_MODULUS, batch_mul, batch_add
-from zkgpu.curve import Point, G, P, scalar_mul
-from zkgpu.ntt import ntt, polynomial_mul, MOD as NTT_MOD
-from zkgpu.msm import msm_naive, msm_double_and_add
+from zkgpu.curve import G, P, Point, scalar_mul
+from zkgpu.field import FIELD_MODULUS, Fp, batch_add, batch_mul
+from zkgpu.msm import msm_double_and_add, msm_naive
+from zkgpu.ntt import MOD as NTT_MOD, ntt, polynomial_mul
 
 __all__ = [
     # field

@@ -4,8 +4,8 @@ import copy
 import pickle
 
 import pytest
-from zkgpu.field import Fp, FIELD_MODULUS, batch_mul, batch_add
 
+from zkgpu.field import FIELD_MODULUS, Fp, batch_add, batch_mul
 
 # ------------------------------------------------------------------
 # Fp class tests

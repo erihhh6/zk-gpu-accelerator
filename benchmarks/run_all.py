@@ -16,8 +16,8 @@ import os
 import time
 
 from benchmarks.bench_field import run_bench as bench_field
-from benchmarks.bench_ntt import run_bench as bench_ntt
 from benchmarks.bench_msm import run_bench as bench_msm
+from benchmarks.bench_ntt import run_bench as bench_ntt
 
 
 def _fmt(val: float | None, suffix: str = "") -> str:

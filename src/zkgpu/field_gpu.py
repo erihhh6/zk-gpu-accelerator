@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 import operator
+from typing import Any
 
 import numpy as np
 
@@ -113,21 +114,21 @@ def _check_modulus(mod: int) -> int:
     return mod
 
 
-def _check_integer_array(x, name: str) -> None:
+def _check_integer_array(x: Any, name: str) -> None:
     """Reject non-integer arrays, which the int64 kernels would truncate silently."""
     dtype = x.dtype if hasattr(x, "dtype") else np.asarray(x).dtype
     if dtype.kind not in "iu":
         raise TypeError(f"{name} must be an integer array, got dtype {dtype}")
 
 
-def _to_host_reduced(x, mod: int) -> np.ndarray:
+def _to_host_reduced(x: Any, mod: int) -> np.ndarray:
     """int64 NumPy copy of *x* reduced into [0, mod); NumPy's % floors, so signs come out right."""
     host = cp.asnumpy(x) if hasattr(x, "get") else np.asarray(x)
     # Widen first: in a narrower dtype such as int32 the products would overflow
     return np.mod(host.astype(np.int64, copy=False), mod)
 
 
-def _gpu_pow_nonnegative(base: "cp.ndarray", exp: int, mod: int) -> "cp.ndarray":
+def _gpu_pow_nonnegative(base: cp.ndarray, exp: int, mod: int) -> cp.ndarray:
     """Square-and-multiply on reduced *base*; *exp* must be >= 0."""
     result = cp.ones_like(base)
     while exp:
@@ -143,7 +144,7 @@ def _gpu_pow_nonnegative(base: "cp.ndarray", exp: int, mod: int) -> "cp.ndarray"
 # ------------------------------------------------------------------
 
 
-def gpu_batch_mul(a: "cp.ndarray", b: "cp.ndarray", mod: int) -> "cp.ndarray":
+def gpu_batch_mul(a: cp.ndarray, b: cp.ndarray, mod: int) -> cp.ndarray:
     """
     Element-wise modular multiplication on GPU: result[i] = (a[i] * b[i]) % mod.
 
@@ -168,16 +169,16 @@ def gpu_batch_mul(a: "cp.ndarray", b: "cp.ndarray", mod: int) -> "cp.ndarray":
         warn_cpu_fallback("gpu_batch_mul", "NumPy")
         a_r, b_r = _to_host_reduced(a, mod), _to_host_reduced(b, mod)
         if mod <= _INT64_PRODUCT_SAFE_MOD:
-            return a_r * b_r % mod  # type: ignore[return-value]
+            return a_r * b_r % mod
         # Products would overflow int64: multiply as exact Python ints instead
-        return (a_r.astype(object) * b_r.astype(object) % mod).astype(np.int64)  # type: ignore[return-value]
+        return (a_r.astype(object) * b_r.astype(object) % mod).astype(np.int64)
 
     # CuPy's typed kernels reject other integer dtypes rather than casting;
     # astype is a no-op for arrays that are already int64
     return _modmul_kernel(a.astype(cp.int64, copy=False), b.astype(cp.int64, copy=False), mod)
 
 
-def gpu_batch_add(a: "cp.ndarray", b: "cp.ndarray", mod: int) -> "cp.ndarray":
+def gpu_batch_add(a: cp.ndarray, b: cp.ndarray, mod: int) -> cp.ndarray:
     """
     Element-wise modular addition on GPU: result[i] = (a[i] + b[i]) % mod.
 
@@ -190,12 +191,12 @@ def gpu_batch_add(a: "cp.ndarray", b: "cp.ndarray", mod: int) -> "cp.ndarray":
         warn_cpu_fallback("gpu_batch_add", "NumPy")
         a_r, b_r = _to_host_reduced(a, mod), _to_host_reduced(b, mod)
         d = a_r - (mod - b_r)  # in (-mod, mod): cannot overflow, unlike a_r + b_r
-        return np.where(d < 0, d + mod, d)  # type: ignore[return-value]
+        return np.where(d < 0, d + mod, d)
 
     return _modadd_kernel(a.astype(cp.int64, copy=False), b.astype(cp.int64, copy=False), mod)
 
 
-def gpu_batch_pow(bases: "cp.ndarray", exp: int, mod: int) -> "cp.ndarray":
+def gpu_batch_pow(bases: cp.ndarray, exp: int, mod: int) -> cp.ndarray:
     """
     Element-wise modular exponentiation: result[i] = bases[i]^exp % mod.
 
@@ -216,7 +217,7 @@ def gpu_batch_pow(bases: "cp.ndarray", exp: int, mod: int) -> "cp.ndarray":
         warn_cpu_fallback("gpu_batch_pow", "Python pow()")
         bases_r = _to_host_reduced(bases, mod)
         # Python's pow raises the same ValueError for a zero base with exp < 0
-        return np.array([pow(int(x), exp, mod) for x in bases_r], dtype=np.int64)  # type: ignore[return-value]
+        return np.array([pow(int(x), exp, mod) for x in bases_r], dtype=np.int64)
 
     # Widen first (a large mod does not fit narrower dtypes); CuPy's % floors
     # like NumPy's, so the result lies in [0, mod)

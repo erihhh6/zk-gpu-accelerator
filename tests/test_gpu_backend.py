@@ -7,7 +7,7 @@ from zkgpu import field_gpu, gpu_backend
 
 
 def test_reason_is_set_exactly_when_gpu_unavailable():
-    assert gpu_backend.GPU_AVAILABLE == (gpu_backend.GPU_UNAVAILABLE_REASON is None)
+    assert (gpu_backend.GPU_UNAVAILABLE_REASON is None) == gpu_backend.GPU_AVAILABLE
 
 
 def test_summarize_extracts_cupy_original_error():

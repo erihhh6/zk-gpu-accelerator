@@ -8,7 +8,7 @@ import pytest
 from zkgpu import msm_gpu as msm_gpu_module
 from zkgpu.curve import G, P as CURVE_P, Point
 from zkgpu.field import FIELD_MODULUS as R
-from zkgpu.msm import msm_naive, msm_double_and_add
+from zkgpu.msm import msm_double_and_add, msm_naive
 from zkgpu.msm_gpu import msm_pippenger_gpu
 
 pytestmark = pytest.mark.filterwarnings("ignore::zkgpu.gpu_backend.GpuFallbackWarning")
@@ -97,8 +97,8 @@ def test_msm_linearity():
 
 def test_msm_all_identity_points():
     """msm with identity points always returns identity."""
-    O = Point.identity()
-    result = msm_naive([O, O, O], [5, 10, 20])
+    INF = Point.identity()
+    result = msm_naive([INF, INF, INF], [5, 10, 20])
     assert result == Point.identity()
 
 
@@ -151,8 +151,8 @@ def test_double_and_add_full_size_and_oversized_scalars():
 
 
 def test_double_and_add_with_identity_points():
-    O = Point.identity()
-    assert msm_double_and_add([O, G, O], [5, 3, -2]) == G * 3
+    INF = Point.identity()
+    assert msm_double_and_add([INF, G, INF], [5, 3, -2]) == G * 3
 
 
 # ------------------------------------------------------------------

@@ -8,7 +8,7 @@ import pytest
 from zkgpu import ntt_gpu as ntt_gpu_module
 from zkgpu.field import FIELD_MODULUS as BN254_R
 from zkgpu.gpu_backend import GpuFallbackWarning, cp
-from zkgpu.ntt import get_ntt_root, ntt, polynomial_mul, quadratic_non_residue, MOD
+from zkgpu.ntt import MOD, get_ntt_root, ntt, polynomial_mul, quadratic_non_residue
 from zkgpu.ntt_gpu import ntt_gpu
 
 # Largest prime below 2^63 of the form k·2^32 + 1: exercises field_gpu's
@@ -71,9 +71,9 @@ def test_ntt_linearity():
     n = 64
     a = [random.randint(0, MOD - 1) for _ in range(n)]
     b = [random.randint(0, MOD - 1) for _ in range(n)]
-    ab = [(x + y) % MOD for x, y in zip(a, b)]
+    ab = [(x + y) % MOD for x, y in zip(a, b, strict=True)]
     lhs = ntt(ab, MOD)
-    rhs = [(x + y) % MOD for x, y in zip(ntt(a, MOD), ntt(b, MOD))]
+    rhs = [(x + y) % MOD for x, y in zip(ntt(a, MOD), ntt(b, MOD), strict=True)]
     assert lhs == rhs
 
 

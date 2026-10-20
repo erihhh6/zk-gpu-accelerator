@@ -57,7 +57,7 @@ def test_batch_mul_matches_python(backend, mod):
     a, b = field_elements(1000, mod, 1), field_elements(1000, mod, 2)
     got = field_gpu.gpu_batch_mul(as_input(backend, a), as_input(backend, b), mod)
     assert got.dtype == np.int64
-    assert got.tolist() == [(x * y) % mod for x, y in zip(a, b)]
+    assert got.tolist() == [(x * y) % mod for x, y in zip(a, b, strict=True)]
 
 
 @pytest.mark.parametrize("backend", BACKENDS, indirect=True)
@@ -66,7 +66,7 @@ def test_batch_add_matches_python(backend, mod):
     a, b = field_elements(1000, mod, 3), field_elements(1000, mod, 4)
     got = field_gpu.gpu_batch_add(as_input(backend, a), as_input(backend, b), mod)
     assert got.dtype == np.int64
-    assert got.tolist() == [(x + y) % mod for x, y in zip(a, b)]
+    assert got.tolist() == [(x + y) % mod for x, y in zip(a, b, strict=True)]
 
 
 @pytest.mark.parametrize("backend", BACKENDS, indirect=True)
@@ -76,8 +76,12 @@ def test_extreme_residues(backend, mod):
     a = [mod - 1, mod - 1, mod - 2, 0, 1]
     b = [mod - 1, 1, mod - 1, mod - 1, mod - 1]
     a_in, b_in = as_input(backend, a), as_input(backend, b)
-    assert field_gpu.gpu_batch_mul(a_in, b_in, mod).tolist() == [(x * y) % mod for x, y in zip(a, b)]
-    assert field_gpu.gpu_batch_add(a_in, b_in, mod).tolist() == [(x + y) % mod for x, y in zip(a, b)]
+    assert field_gpu.gpu_batch_mul(a_in, b_in, mod).tolist() == [
+        (x * y) % mod for x, y in zip(a, b, strict=True)
+    ]
+    assert field_gpu.gpu_batch_add(a_in, b_in, mod).tolist() == [
+        (x + y) % mod for x, y in zip(a, b, strict=True)
+    ]
 
 
 @pytest.mark.parametrize("backend", BACKENDS, indirect=True)
@@ -108,8 +112,12 @@ def test_unreduced_and_negative_inputs_reduce_into_field(backend, mod):
     a = [-3, -10, INT64_MAX, INT64_MIN, 12, 0]
     b = [5, 1, INT64_MAX, INT64_MIN, -12, -1]
     a_in, b_in = as_input(backend, a), as_input(backend, b)
-    assert field_gpu.gpu_batch_mul(a_in, b_in, mod).tolist() == [(x * y) % mod for x, y in zip(a, b)]
-    assert field_gpu.gpu_batch_add(a_in, b_in, mod).tolist() == [(x + y) % mod for x, y in zip(a, b)]
+    assert field_gpu.gpu_batch_mul(a_in, b_in, mod).tolist() == [
+        (x * y) % mod for x, y in zip(a, b, strict=True)
+    ]
+    assert field_gpu.gpu_batch_add(a_in, b_in, mod).tolist() == [
+        (x + y) % mod for x, y in zip(a, b, strict=True)
+    ]
     assert field_gpu.gpu_batch_pow(a_in, 3, mod).tolist() == [pow(x, 3, mod) for x in a]
 
 

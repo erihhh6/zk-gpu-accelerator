@@ -17,13 +17,14 @@ import time
 
 import numpy as np
 
-from zkgpu.ntt import ntt as ntt_cpu, MOD
+from zkgpu.ntt import MOD, ntt as ntt_cpu
 
 SIZES = [2**k for k in [14, 16, 18, 20]]
 RUNS = 3
 
 try:
-    from zkgpu.ntt_gpu import ntt_gpu, _gpu_available
+    from zkgpu.ntt_gpu import _gpu_available, ntt_gpu
+
     if _gpu_available:
         import cupy as cp
 except Exception:
@@ -75,7 +76,7 @@ def run_bench() -> list[dict]:
     print("=== NTT Benchmark (Cooley-Tukey, MOD=998244353) ===")
     results = []
     for n in SIZES:
-        print(f"  N = 2^{n.bit_length()-1} = {n:>8} ...", end=" ", flush=True)
+        print(f"  N = 2^{n.bit_length() - 1} = {n:>8} ...", end=" ", flush=True)
         r = benchmark_size(n)
         results.append(r)
         gpu_str = f"GPU {r['gpu_ms']} ms | Speedup {r['speedup']}x" if r["gpu_ms"] else "GPU N/A"

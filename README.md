@@ -162,14 +162,13 @@ print(gpu_batch_pow(a, 3, MOD))   # [27, 125, 343]
 ### BN254 Curve Operations
 
 ```python
-from zkgpu.curve import G, Point
+from zkgpu.curve import G, P, Point   # P is the BN254 base-field prime
 
-P = G * 42
-Q = G * 7
-R = P + Q
-print(R == G * 49)       # True
+A = G * 42
+B = G * 7
+print(A + B == G * 49)   # True
 
-Point(1, 2 + 21888242871839275222246405745257275088696311157297823662689037894645226208583) == G  # coordinates are reduced mod p
+print(Point(1, 2 + P) == G)   # True: coordinates are reduced mod P
 Point(1, 3)              # ValueError: (1, 3) is not on the BN254 curve
 ```
 
@@ -261,13 +260,30 @@ pytest -v -rxs
 - A newly found bug is first recorded as a **known bug**: a test that asserts the *correct* behaviour, marked with `known_bug` (see `tests/known_bugs.py`) so it is reported as `xfail` until fixed. The marker is strict, so the commit that fixes the bug must also remove it.
 - `-rxs` prints the reason for every skip and xfail.
 
+### Lint, format and type-check
+
+```bash
+ruff check .          # lint (pyflakes, bugbear, import order, ...)
+ruff format .         # format
+mypy                  # strict type-check of the zkgpu package
+```
+
+CI runs the same three commands. Their versions are pinned in the `dev` extra, and the configuration lives in `pyproject.toml`. To run them automatically before every commit:
+
+```bash
+pre-commit install    # once per clone; uses .pre-commit-config.yaml
+```
+
+After that, a commit that fails a check is stopped, and ruff fixes what it safely can.
+
 ---
 
 ## Project Structure
 
 ```
 zk-gpu-accelerator/
-├── pyproject.toml         # package metadata, dependency extras, pytest config
+├── pyproject.toml         # package metadata, dependency extras, pytest/ruff/mypy config
+├── .pre-commit-config.yaml  # runs ruff + mypy before each commit (pre-commit install)
 ├── src/zkgpu/             # the importable package: `import zkgpu`
 │   ├── gpu_backend.py     # One-time CUDA/CuPy detection + reason when unavailable
 │   ├── field.py           # Fp arithmetic CPU — BN254 scalar field

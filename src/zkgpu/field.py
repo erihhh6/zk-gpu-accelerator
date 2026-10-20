@@ -12,6 +12,7 @@ All arithmetic is performed mod r. This module provides:
 from __future__ import annotations
 
 import operator
+from typing import SupportsIndex
 
 FIELD_MODULUS: int = 21888242871839275222246405745257275088548364400416034343698204186575808495617
 
@@ -20,10 +21,11 @@ def _value_of(x: object) -> int | None:
     """Canonical int for an Fp or an integer operand, or None for anything else."""
     if isinstance(x, Fp):
         return x.value
-    try:
+    # SupportsIndex is runtime-checkable: true for int, bool and NumPy integers,
+    # false for floats, so they are rejected rather than truncated
+    if isinstance(x, SupportsIndex):
         return operator.index(x) % FIELD_MODULUS
-    except TypeError:
-        return None
+    return None
 
 
 class Fp:
@@ -134,11 +136,11 @@ def batch_mul(a: list[int], b: list[int], mod: int) -> list[int]:
     """Element-wise multiplication modulo *mod* on two int lists."""
     if len(a) != len(b):
         raise ValueError(f"Length mismatch: len(a)={len(a)}, len(b)={len(b)}")
-    return [(x * y) % mod for x, y in zip(a, b)]
+    return [(x * y) % mod for x, y in zip(a, b, strict=True)]
 
 
 def batch_add(a: list[int], b: list[int], mod: int) -> list[int]:
     """Element-wise addition modulo *mod* on two int lists."""
     if len(a) != len(b):
         raise ValueError(f"Length mismatch: len(a)={len(a)}, len(b)={len(b)}")
-    return [(x + y) % mod for x, y in zip(a, b)]
+    return [(x + y) % mod for x, y in zip(a, b, strict=True)]

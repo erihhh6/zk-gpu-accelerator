@@ -29,7 +29,9 @@ classifiers = [
 gpu = ["cupy-cuda12x>=13.0"]
 # Plotting for benchmarks/plot_results.py
 bench = ["matplotlib>=3.8"]
-dev = ["pytest>=8.0"]
+# Linters are pinned exactly: a new ruff/mypy release can add rules or change
+# inference, which should be an explicit upgrade rather than a surprise CI failure.
+dev = ["pytest>=8.0", "ruff==0.17.1", "mypy==2.4.0", "pre-commit>=4.0"]
 
 [project.urls]
 Repository = "https://github.com/erihhh6/zk-gpu-accelerator"
@@ -39,6 +41,40 @@ version = { attr = "zkgpu.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 110  # the width the existing code was written to
+target-version = "py311"
+src = ["src", "."]  # first-party code: the zkgpu package plus tests/, benchmarks/, ...
+# README examples are hand-aligned for readability; keep the formatter out of them
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",  # pycodestyle
+    "F",       # pyflakes: unused imports/variables, undefined names
+    "I",       # import sorting
+    "B",       # bugbear: likely bugs, e.g. zip() silently truncating mismatched inputs
+    "UP",      # pyupgrade: syntax for the minimum supported Python
+    "SIM",     # simplifications
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true  # keep `import a as b, c` on one line instead of splitting it
+
+[tool.mypy]
+files = ["src/zkgpu"]
+python_version = "3.11"
+strict = true
+# mypy's default native parser loads a compiled extension (ast_serialize) that
+# Windows Smart App Control blocks on some machines; the pure-Python parser is
+# plenty fast for a codebase this size.
+native_parser = false
+
+[[tool.mypy.overrides]]
+# CuPy ships no type information, and CI installs it not at all
+module = ["cupy", "cupy.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

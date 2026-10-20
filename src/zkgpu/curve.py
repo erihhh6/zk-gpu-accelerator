@@ -75,7 +75,7 @@ class Point:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def identity() -> "Point":
+    def identity() -> Point:
         """Return the additive identity (point at infinity)."""
         return Point(None, None)
 
@@ -83,19 +83,29 @@ class Point:
         """Return True if this point is the point at infinity."""
         return self.x is None and self.y is None
 
+    def _affine(self) -> tuple[int, int]:
+        """
+        (x, y) of a finite point; callers rule out the identity first.
+
+        Returning a plain int pair also tells the type checker that neither
+        coordinate is None, so the formulas below need no per-use checks.
+        """
+        if self.x is None or self.y is None:
+            raise ValueError("the point at infinity has no affine coordinates")
+        return self.x, self.y
+
     def is_on_curve(self) -> bool:
         """Verify that the point satisfies y² = x³ + 3 mod P."""
         if self.is_identity():
             return True
-        lhs = (self.y * self.y) % P
-        rhs = (pow(self.x, 3, P) + B) % P
-        return lhs == rhs
+        x, y = self._affine()
+        return (y * y - pow(x, 3, P) - B) % P == 0
 
     # ------------------------------------------------------------------
     # Arithmetic
     # ------------------------------------------------------------------
 
-    def __add__(self, other: "Point") -> "Point":
+    def __add__(self, other: object) -> Point:
         """Elliptic curve point addition (affine coordinates)."""
         if not isinstance(other, Point):
             return NotImplemented
@@ -104,33 +114,35 @@ class Point:
         if other.is_identity():
             return self
 
-        if self.x == other.x:
+        (x1, y1), (x2, y2) = self._affine(), other._affine()
+        if x1 == x2:
             # Points are either equal (doubling) or inverses (identity)
-            if self.y == other.y:
+            if y1 == y2:
                 return self.double()
             # P + (-P) = identity
             return Point.identity()
 
         # Generic addition: λ = (y2 - y1) / (x2 - x1) mod P
-        lam = ((other.y - self.y) * _modinv(other.x - self.x, P)) % P
-        x3 = (lam * lam - self.x - other.x) % P
-        y3 = (lam * (self.x - x3) - self.y) % P
+        lam = ((y2 - y1) * _modinv(x2 - x1, P)) % P
+        x3 = (lam * lam - x1 - x2) % P
+        y3 = (lam * (x1 - x3) - y1) % P
         return Point(x3, y3)
 
-    def double(self) -> "Point":
+    def double(self) -> Point:
         """Elliptic curve point doubling: λ = (3x² + A) / (2y) mod P."""
         if self.is_identity():
             return Point.identity()
-        if self.y == 0:
+        x, y = self._affine()
+        if y == 0:
             # Tangent is vertical → result is identity
             return Point.identity()
 
-        lam = ((3 * self.x * self.x + A) * _modinv(2 * self.y, P)) % P
-        x3 = (lam * lam - 2 * self.x) % P
-        y3 = (lam * (self.x - x3) - self.y) % P
+        lam = ((3 * x * x + A) * _modinv(2 * y, P)) % P
+        x3 = (lam * lam - 2 * x) % P
+        y3 = (lam * (x - x3) - y) % P
         return Point(x3, y3)
 
-    def __mul__(self, scalar: int) -> "Point":
+    def __mul__(self, scalar: int) -> Point:
         """Scalar multiplication via double-and-add: O(log scalar)."""
         try:
             scalar = operator.index(scalar)  # rejects floats instead of truncating
@@ -148,14 +160,15 @@ class Point:
             scalar >>= 1
         return result
 
-    def __rmul__(self, scalar: int) -> "Point":
+    def __rmul__(self, scalar: int) -> Point:
         return self.__mul__(scalar)
 
-    def __neg__(self) -> "Point":
+    def __neg__(self) -> Point:
         """Additive inverse: negate the y-coordinate."""
         if self.is_identity():
             return Point.identity()
-        return Point(self.x, (-self.y) % P)
+        x, y = self._affine()
+        return Point(x, -y % P)
 
     # ------------------------------------------------------------------
     # Representation (__eq__ and __hash__ come from the frozen dataclass and

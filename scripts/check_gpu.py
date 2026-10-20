@@ -86,9 +86,8 @@ def check_torch() -> Check:
         return Check(INFO, "PyTorch", f"installed but failed to import: {type(exc).__name__}: {exc}")
     if not torch.cuda.is_available():
         return Check(INFO, "PyTorch", f"torch {torch.__version__}, but torch.cuda.is_available() is False")
-    return Check(
-        INFO, "PyTorch", f"torch {torch.__version__} (CUDA {torch.version.cuda}) sees {torch.cuda.get_device_name(0)}"
-    )
+    device = torch.cuda.get_device_name(0)
+    return Check(INFO, "PyTorch", f"torch {torch.__version__} (CUDA {torch.version.cuda}) sees {device}")
 
 
 def _print_hints(checks: list[Check]) -> None:
