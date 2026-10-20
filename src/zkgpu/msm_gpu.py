@@ -10,9 +10,11 @@ msm_pippenger_gpu computes Σ sᵢ·Pᵢ with Pippenger's bucket method:
      at once, then a single device-to-host copy brings them back.
   3. CPU: per window, add each point into the bucket named by its digit and
      combine the buckets with the running-sum trick. All BN254 point
-     arithmetic uses Python's arbitrary-precision ints; there is no CUDA
-     curve arithmetic yet.
-  4. CPU: combine the window sums with Horner's rule.
+     arithmetic uses Python's arbitrary-precision ints in Jacobian
+     coordinates (no inverse per addition); there is no CUDA curve
+     arithmetic yet.
+  4. CPU: combine the window sums with Horner's rule, then convert the
+     result back to affine with a single inverse.
 The speedup over msm_naive comes from Pippenger doing far fewer point
 additions, not from the GPU step; the CPU fallback path is no slower.
 
@@ -28,7 +30,15 @@ from typing import SupportsIndex
 
 import numpy as np
 
-from zkgpu.curve import Point
+from zkgpu.curve import (
+    JACOBIAN_IDENTITY,
+    Jacobian,
+    Point,
+    from_jacobian,
+    jacobian_add,
+    jacobian_add_affine,
+    jacobian_double,
+)
 from zkgpu.field import FIELD_MODULUS as _GROUP_ORDER  # BN254's r: order of G1
 from zkgpu.gpu_backend import GPU_AVAILABLE as _gpu_available, cp, warn_cpu_fallback
 
@@ -92,20 +102,21 @@ def _window_digits(scalars: list[int], window_size: int, num_windows: int) -> li
 # ------------------------------------------------------------------
 
 
-def _window_sum(points: list[Point], digits: list[int], bucket_count: int) -> Point:
+def _window_sum(coords: list[tuple[int, int]], digits: list[int], bucket_count: int) -> Jacobian:
     """Σ digitᵢ·Pᵢ for one window, using 2^w buckets instead of N scalar multiplications."""
-    buckets = [Point.identity()] * bucket_count  # bucket 0 contributes nothing
-    for point, digit in zip(points, digits, strict=True):
+    # Buckets are Jacobian and inputs affine, so filling them uses mixed additions
+    buckets = [JACOBIAN_IDENTITY] * bucket_count  # bucket 0 contributes nothing
+    for (x, y), digit in zip(coords, digits, strict=True):
         if digit:
-            buckets[digit] = buckets[digit] + point
+            buckets[digit] = jacobian_add_affine(buckets[digit], x, y)
 
     # Running-sum trick: Σ k·B_k = Σ_{j≥1} (B_j + B_{j+1} + ...), so two
     # additions per bucket replace a scalar multiplication per bucket.
-    running = Point.identity()
-    total = Point.identity()
+    running = JACOBIAN_IDENTITY
+    total = JACOBIAN_IDENTITY
     for k in range(bucket_count - 1, 0, -1):
-        running = running + buckets[k]
-        total = total + running
+        running = jacobian_add(running, buckets[k])
+        total = jacobian_add(total, running)
     return total
 
 
@@ -165,7 +176,8 @@ def msm_pippenger_gpu(
     if not reduced:
         return Point.identity()
 
-    points = [Point(x, y) for x, y in zip(xs, ys, strict=True)]
+    # Point() validates every caller-supplied pair is on the curve before use
+    coords = [Point(x, y).affine() for x, y in zip(xs, ys, strict=True)]
     num_windows = -(-_SCALAR_BITS // window_size)  # ceil(254 / w)
     if not _gpu_available:
         warn_cpu_fallback("msm_pippenger_gpu", "CPU window-digit extraction")
@@ -175,9 +187,9 @@ def msm_pippenger_gpu(
     # result by w bits between windows costs w·(num_windows - 1) ≈ 254
     # doublings in total, instead of shifting each window sum separately.
     bucket_count = 1 << window_size
-    result = _window_sum(points, digits[-1], bucket_count)
+    acc = _window_sum(coords, digits[-1], bucket_count)
     for win in range(num_windows - 2, -1, -1):
         for _ in range(window_size):
-            result = result.double()
-        result = result + _window_sum(points, digits[win], bucket_count)
-    return result
+            acc = jacobian_double(acc)
+        acc = jacobian_add(acc, _window_sum(coords, digits[win], bucket_count))
+    return from_jacobian(acc)

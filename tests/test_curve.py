@@ -5,7 +5,19 @@ import random
 
 import pytest
 
-from zkgpu.curve import G, P, Point, scalar_mul
+from zkgpu.curve import (
+    JACOBIAN_IDENTITY,
+    G,
+    P,
+    Point,
+    from_jacobian,
+    jacobian_add,
+    jacobian_add_affine,
+    jacobian_double,
+    jacobian_mul,
+    scalar_mul,
+    to_jacobian,
+)
 from zkgpu.field import FIELD_MODULUS as R  # BN254 G1 is a cyclic group of prime order r
 
 INF = Point.identity()
@@ -131,3 +143,90 @@ def test_arithmetic_rejects_unsupported_operands():
         G + 1
     with pytest.raises(TypeError):
         G * 2.0
+
+
+def test_affine_coordinates():
+    assert G.affine() == (1, 2)
+    with pytest.raises(ValueError, match="no affine coordinates"):
+        INF.affine()
+
+
+# ------------------------------------------------------------------
+# Jacobian coordinates, checked against the affine formulas
+# ------------------------------------------------------------------
+# Point's affine + and double() share no code with the Jacobian functions, so
+# they serve as the reference. Inputs are scaled by a random λ so that Z != 1:
+# formulas that silently assume Z = 1 would pass on to_jacobian() output alone.
+
+
+def scaled(point: Point, lam: int) -> tuple[int, int, int]:
+    """The same point in Jacobian form with Z = λ: (x·λ², y·λ³, λ)."""
+    x, y = point.affine()
+    return (x * lam * lam % P, y * pow(lam, 3, P) % P, lam)
+
+
+def affine_ladder(point: Point, k: int) -> Point:
+    """Reference scalar multiplication using only affine + and double()."""
+    if k < 0:
+        point, k = -point, -k
+    result, addend = INF, point
+    while k:
+        if k & 1:
+            result = result + addend
+        addend = addend.double()
+        k >>= 1
+    return result
+
+
+@pytest.fixture(scope="module")
+def lambdas():
+    rng = random.Random(77)
+    return [rng.randrange(2, P) for _ in range(3)]
+
+
+def test_jacobian_round_trip(random_points, lambdas):
+    for point in (G, TWO_G, INF, *random_points):
+        assert from_jacobian(to_jacobian(point)) == point
+    assert from_jacobian(scaled(G, lambdas[0])) == G
+    assert from_jacobian(JACOBIAN_IDENTITY) == INF
+    assert from_jacobian((5, 7, 0)) == INF  # any Z = 0 is the identity
+
+
+def test_jacobian_double_matches_affine(random_points, lambdas):
+    for point, lam in zip(random_points, lambdas, strict=True):
+        assert from_jacobian(jacobian_double(scaled(point, lam))) == point.double()
+    assert from_jacobian(jacobian_double(JACOBIAN_IDENTITY)) == INF
+
+
+def test_jacobian_add_matches_affine(random_points, lambdas):
+    a, b, c = random_points
+    l1, l2, l3 = lambdas
+    assert from_jacobian(jacobian_add(scaled(a, l1), scaled(b, l2))) == a + b
+    assert from_jacobian(jacobian_add(scaled(b, l2), scaled(c, l3))) == b + c
+    assert from_jacobian(jacobian_add_affine(scaled(a, l1), *b.affine())) == a + b
+
+
+def test_jacobian_special_cases(random_points, lambdas):
+    """Equal and opposite points need the explicit branch: the general formula gives Z = 0 for both."""
+    a = random_points[0]
+    l1, l2, _ = lambdas
+    # Same point, different Z: the coordinates differ, but the sum must be a doubling
+    assert from_jacobian(jacobian_add(scaled(a, l1), scaled(a, l2))) == a.double()
+    assert from_jacobian(jacobian_add_affine(scaled(a, l1), *a.affine())) == a.double()
+    # P + (-P) = O
+    assert from_jacobian(jacobian_add(scaled(a, l1), scaled(-a, l2))) == INF
+    assert from_jacobian(jacobian_add_affine(scaled(a, l1), *(-a).affine())) == INF
+    # The identity on either side
+    assert from_jacobian(jacobian_add(JACOBIAN_IDENTITY, scaled(a, l1))) == a
+    assert from_jacobian(jacobian_add(scaled(a, l1), JACOBIAN_IDENTITY)) == a
+    assert from_jacobian(jacobian_add_affine(JACOBIAN_IDENTITY, *a.affine())) == a
+
+
+def test_jacobian_mul_matches_affine_ladder(random_points):
+    rng = random.Random(5)
+    point = random_points[0]
+    for k in (0, 1, 2, 3, -1, -7, R - 1, R, R + 1, rng.randrange(R), rng.randrange(R)):
+        expected = affine_ladder(point, k)
+        assert from_jacobian(jacobian_mul(point, k)) == expected
+        assert point * k == expected
+    assert from_jacobian(jacobian_mul(INF, 12345)) == INF

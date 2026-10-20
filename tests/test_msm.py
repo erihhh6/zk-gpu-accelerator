@@ -5,7 +5,7 @@ import random
 import numpy as np
 import pytest
 
-from zkgpu import msm_gpu as msm_gpu_module
+from zkgpu import curve as curve_module, msm as msm_module, msm_gpu as msm_gpu_module
 from zkgpu.curve import G, P as CURVE_P, Point
 from zkgpu.field import FIELD_MODULUS as R
 from zkgpu.msm import msm_double_and_add, msm_naive
@@ -36,15 +36,22 @@ def pippenger(points: list[Point], scalars: list[int], window_size: int = 8) -> 
 
 
 def count_doublings(monkeypatch) -> dict[str, int]:
-    """Count Point.double calls from here on (build inputs before calling this)."""
+    """
+    Count the MSMs' Jacobian doublings from here on (build inputs before calling this).
+
+    Patched where the MSM modules look the function up; the callers' tests also
+    assert a lower bound, so a counter that is no longer wired in fails loudly
+    instead of passing with a count of zero.
+    """
     calls = {"n": 0}
-    original = Point.double
+    original = curve_module.jacobian_double
 
-    def counting_double(self):
+    def counting_double(j):
         calls["n"] += 1
-        return original(self)
+        return original(j)
 
-    monkeypatch.setattr(Point, "double", counting_double)
+    monkeypatch.setattr(msm_module, "jacobian_double", counting_double)
+    monkeypatch.setattr(msm_gpu_module, "jacobian_double", counting_double)
     return calls
 
 
@@ -131,7 +138,7 @@ def test_double_and_add_doubles_once_per_bit(monkeypatch):
     scalars = [rng.randint(2**15, 2**16 - 1) for _ in range(8)]  # exactly 16 bits each
     calls = count_doublings(monkeypatch)
     msm_double_and_add(points, scalars)
-    assert calls["n"] <= 16 + len(points)  # one shared accumulator doubling per bit
+    assert 16 <= calls["n"] <= 16 + len(points)  # one shared accumulator doubling per bit
 
 
 def test_double_and_add_negative_scalars():
@@ -206,7 +213,7 @@ def test_pippenger_doublings_are_linear_in_scalar_bits(backend, monkeypatch):
     scalars = [2**250 + k for k in range(len(points))]
     calls = count_doublings(monkeypatch)
     pippenger(points, scalars)
-    assert calls["n"] <= 256 + len(points)
+    assert 8 * 31 <= calls["n"] <= 256 + len(points)  # w·(windows - 1) = 248 for w = 8
 
 
 def test_pippenger_validates_arguments():

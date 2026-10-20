@@ -15,7 +15,7 @@ Two implementations are provided:
 
 from __future__ import annotations
 
-from zkgpu.curve import Point
+from zkgpu.curve import JACOBIAN_IDENTITY, Point, from_jacobian, jacobian_add_affine, jacobian_double
 
 # ------------------------------------------------------------------
 # MSM implementations
@@ -50,6 +50,10 @@ def msm_double_and_add(points: list[Point], scalars: list[int]) -> Point:
     per set bit, versus N · bits doublings for msm_naive. Additions are
     unchanged, so the saving is roughly the doubling half of the work.
 
+    The accumulator lives in Jacobian coordinates, so no step needs a
+    modular inverse; the inputs stay affine, so each addition is the cheaper
+    mixed addition. One inverse converts the result back at the end.
+
     Algorithm
     ---------
     result = O  (identity)
@@ -62,16 +66,18 @@ def msm_double_and_add(points: list[Point], scalars: list[int]) -> Point:
 
     # Fold signs into the points (-k·P = k·(-P)) so the bit walk only ever sees
     # non-negative scalars; Python's >> on a negative int never reaches 0.
+    # Identity points contribute nothing and have no affine coordinates.
     terms = [
-        (-point, -scalar) if scalar < 0 else (point, scalar)
+        ((-point if scalar < 0 else point).affine(), abs(scalar))
         for point, scalar in zip(points, scalars, strict=True)
+        if not point.is_identity()
     ]
     max_bits = max((scalar.bit_length() for _, scalar in terms), default=0)
 
-    result = Point.identity()
+    acc = JACOBIAN_IDENTITY
     for bit in range(max_bits - 1, -1, -1):
-        result = result.double()
-        for point, scalar in terms:
+        acc = jacobian_double(acc)
+        for (x, y), scalar in terms:
             if (scalar >> bit) & 1:
-                result = result + point
-    return result
+                acc = jacobian_add_affine(acc, x, y)
+    return from_jacobian(acc)
