@@ -8,6 +8,7 @@ import pytest
 from zkgpu import curve as curve_module, msm as msm_module, msm_gpu as msm_gpu_module
 from zkgpu.curve import G, P as CURVE_P, Point
 from zkgpu.field import FIELD_MODULUS as R
+from zkgpu.gpu_backend import cp
 from zkgpu.msm import msm_double_and_add, msm_naive
 from zkgpu.msm_gpu import msm_pippenger_gpu
 
@@ -244,10 +245,58 @@ def test_gpu_pippenger_at_scale(window_size, large_inputs):
 
 @pytest.mark.gpu
 def test_gpu_pippenger_with_one_heavy_bucket_per_window():
-    """Equal scalars put every point of a window into one bucket, which one thread adds up alone."""
+    """Equal scalars put every point of a window into one bucket, whose sum is split into chunks."""
     points = [G * k for k in range(1, 201)]
     scalar = 2**200 + 12345
     assert pippenger(points, [scalar] * len(points)) == G * (sum(range(1, 201)) * scalar % R)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("chunk_len", [2, 3, 32])
+@pytest.mark.parametrize("kind", ["boolean", "uniform"])
+def test_gpu_pippenger_chunked_sums(kind, chunk_len, large_inputs, monkeypatch):
+    """
+    Uneven buckets are summed in chunks over several levels.
+
+    Boolean scalars, common witness values, put about half of all points into
+    one bucket. Uniform scalars at w = 9 leave the top window two bits, so two
+    of its buckets each get about a third of the points, and each window has
+    16 reduction segments to sum. Chunks of 2 and 3 force many levels, with a
+    partly filled last chunk at 3.
+    """
+    points, scalars, expected = large_inputs
+    if kind == "boolean":
+        rng = random.Random(41)
+        scalars = [rng.randrange(2) for _ in points]
+        assert 150 < sum(scalars) < 250
+        expected = msm_double_and_add(points, scalars)
+    monkeypatch.setattr(msm_gpu_module, "_CHUNK_LEN", chunk_len)
+    assert pippenger(points, scalars, window_size=9) == expected
+
+
+@pytest.mark.gpu
+def test_gpu_chunk_ranges_cover_every_segment():
+    """At most chunk_len items per chunk, and an empty segment still gets one (empty) chunk."""
+    bounds = cp.asarray([0, 0, 5, 6, 71], dtype=cp.int64)  # segments of 0, 5, 1 and 65 items
+    lo, hi, new_bounds = msm_gpu_module._chunk_ranges(bounds, 32)
+    assert lo.tolist() == [0, 0, 5, 6, 38, 70]
+    assert hi.tolist() == [0, 5, 6, 38, 70, 71]
+    assert new_bounds.tolist() == [0, 1, 2, 3, 6]  # segment 3's three chunks are rows 3 to 5
+
+
+@pytest.mark.gpu
+def test_gpu_chunked_sums_fail_loudly_instead_of_hanging(monkeypatch, large_inputs):
+    """Chunk ranges that never shrink a segment (from a miscompiled kernel, say) raise, not loop forever."""
+
+    def one_chunk_per_row(bounds, chunk_len):
+        rows = cp.arange(int(bounds[-1]) + 1, dtype=cp.int64)
+        return rows[:-1], rows[1:], bounds
+
+    msm_gpu_module.compile_kernels()  # the self-test runs chunked sums too: keep it out of this
+    monkeypatch.setattr(msm_gpu_module, "_chunk_ranges", one_chunk_per_row)
+    points, scalars, _ = large_inputs
+    with pytest.raises(RuntimeError, match="did not converge"):
+        pippenger(points, scalars, window_size=9)
 
 
 @pytest.mark.gpu
