@@ -93,7 +93,7 @@ exclude_also = [
     # line for a whole function). CI sets ZKGPU_COVERAGE_GPU_ONLY="# gpu-only"
     # to leave it out of its measurement; elsewhere the default (?!) matches
     # nothing, so a GPU machine still counts every line. Marked so far:
-    # gpu_backend and field256_gpu.
+    # gpu_backend, field256_gpu and curve_gpu.
     '${ZKGPU_COVERAGE_GPU_ONLY-(?!)}',
 ]
 

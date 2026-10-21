@@ -33,11 +33,11 @@ Measured on an NVIDIA GeForce RTX 5050 Laptop GPU against NumPy and Python ints 
 This is a tested prototype, not yet a GPU prover for BN254:
 
 - **BN254's NTT runs on the GPU** (`BN254_FR.ntt` in `zkgpu.field256_gpu`, on data kept on the GPU), but `Radix2Domain` itself still runs on the CPU. The older GPU NTT (`zkgpu.ntt_gpu`) uses 64-bit integers, so it only works over primes below 2⁶³; its benchmarks use 998244353.
-- **The MSM gains are algorithmic.** Pippenger is 7.2x faster than the naive method at 1,000 points, and Jacobian coordinates made every MSM 18–28x faster. The GPU contributes nothing measurable yet.
+- **The MSM gains are algorithmic.** Pippenger is 7.2x faster than the naive method at 1,000 points, and Jacobian coordinates made every MSM 18–28x faster. The GPU contributes nothing measurable yet. BN254 point addition and doubling now run on the GPU (`zkgpu.curve_gpu`), but the MSM does not use them yet.
 - **The baselines are fair, but they are not the fastest CPU code possible.** Each GPU path is compared with the best CPU code this package has for the same job, which is the right comparison for it. Optimised native libraries (C++/Rust, multithreaded) would be considerably faster and would shrink these ratios. That matters most for BN254, where the baseline is interpreted Python integers, so the 914x and 1,883x overstate the gain over a good CPU library.
 - **A single 254-bit operation only pays off on data that stays on the GPU.** Converting between Python ints and the GPU's format costs more than one multiplication (see [below](#field-multiplication-254-bit-bn254-fr)). An NTT does enough work per element to absorb that cost: even from and to Python ints, it is 18.8x faster at 2¹⁸.
 
-The next step builds the MSM's point arithmetic on the same 254-bit kernels.
+The next step uses those point kernels for the MSM's bucket accumulation, its most expensive part.
 
 ---
 
@@ -272,6 +272,21 @@ Point(1, 3)              # ValueError: (1, 3) is not on the BN254 curve
 
 Points are immutable and validated on construction. Rejecting off-curve coordinates is a security property, not just tidiness: the addition formulas never use the curve constant `b = 3`, so an off-curve input would silently compute on a different, possibly weak, curve (an *invalid-curve attack*). Every `Point`, including those Pippenger builds from caller-supplied coordinates, is checked.
 
+### BN254 G1 points on the GPU
+
+```python
+from zkgpu import curve_gpu
+from zkgpu.curve import G
+
+acc = curve_gpu.to_device([G, G * 2])     # Jacobian rows on the GPU
+for _ in range(10):
+    acc = curve_gpu.double(acc)             # 1024·G, 2048·G
+acc = curve_gpu.add_affine(acc, curve_gpu.affine_to_device([G]))   # + G, broadcast to both
+print(curve_gpu.from_device(acc) == [G * 1025, G * 2049])   # True
+```
+
+Points stay on the GPU as `(n, 3, 4)` arrays of Jacobian coordinates, so whole chains of additions and doublings run without copying. `add_affine` takes its second operand in affine form `(n, 2, 4)`, the cheaper mixed addition. `from_device` converts back and re-validates every point on the curve.
+
 ### NTT (CPU)
 
 ```python
@@ -405,6 +420,7 @@ zk-gpu-accelerator/
 │   ├── field.py           # Fp arithmetic CPU — BN254 scalar field
 │   ├── field_gpu.py       # Batch modular arithmetic GPU — CuPy ElementwiseKernel
 │   ├── field256_gpu.py    # 254-bit field arithmetic + NTT GPU — CUDA Montgomery kernels (BN254)
+│   ├── curve_gpu.py       # BN254 G1 point add/double GPU — Jacobian formulas on those kernels
 │   ├── curve.py           # BN254 G1 points (affine) + Jacobian formulas for long chains
 │   ├── ntt.py             # Cooley-Tukey NTT CPU (any NTT-friendly prime)
 │   ├── domain.py          # Radix-2 evaluation domains: FFT, coset FFT, Z_H (BN254 Fr)
@@ -423,6 +439,7 @@ zk-gpu-accelerator/
 │   ├── test_field.py        # Fp arithmetic (CPU)
 │   ├── test_field_gpu.py    # GPU field ops vs Python ints, GPU + fallback paths
 │   ├── test_field256_gpu.py # 254-bit kernels + NTT vs Python ints, gnark/arkworks constants
+│   ├── test_curve_gpu.py    # GPU point ops vs zkgpu.curve, exact Jacobian coordinates
 │   ├── test_curve.py        # BN254 group law, py_ecc known answers
 │   ├── test_ntt.py          # NTT across moduli, roots-of-unity known answer, GPU
 │   ├── test_domain.py       # domains: snarkjs/arkworks roots, cosets, Groth16 quotient
@@ -458,9 +475,13 @@ The `src/` layout means the code is only importable once installed (`pip install
     - **Bit reversal** is an out-of-place gather, using the `__brevll` intrinsic instead of an index table, so the caller's input is never modified.
     - **The twiddle table** is built on the GPU by doubling (log₂ n small launches) and cached per size.
     - **Tests** check it against the CPU NTT and against the domain's elements (the NTT of X lists ω⁰…ω^(n−1)). Mutation checks confirm that skipping the bit reversal, using wrong twiddles, pairing the wrong rows, or getting the inverse's root or 1/n scaling wrong makes them fail.
-- **GPU kernels**: Written with CuPy's `ElementwiseKernel` and, for the 254-bit field, CUDA C++ modules (compiled at runtime via nvrtc). Works without the full CUDA Toolkit — only nvrtc is needed (bundled with PyTorch on Windows).
+- **Curve points (GPU)**: `zkgpu/curve_gpu.py` implements point addition, mixed addition and doubling as CUDA device functions over BN254_FQ, one thread per point.
+  - **Same formulas as the CPU:** they use exactly the EFD formulas and special cases of `zkgpu/curve.py` (`add-2007-bl`, `madd-2007-bl`, `dbl-2009-l`), so tests compare exact Jacobian coordinates with the CPU, not just affine points. The tests include equal points, inverse points, the identity on either side, and inputs with Z ≠ 1.
+  - **Safe to accumulate in place:** every function reads all its inputs before writing its output.
+  - **Self-tested at load:** the kernels are built through `gpu_backend.compile_module` and checked against `zkgpu.curve` on first load. This is the code where the compiler bug below first showed up.
+- **GPU kernels**: Written with CuPy's `ElementwiseKernel` and, for the 254-bit field and curve points, CUDA C++ modules (compiled at runtime via nvrtc). Works without the full CUDA Toolkit — only nvrtc is needed (bundled with PyTorch on Windows).
 - **A compiler bug, and the guard against the next one**:
-  - **What happened:** with NVRTC 12.8 on this machine's sm_120 (Blackwell) GPU, the machine code NVRTC generated for the 254-bit modules computed wrong Montgomery products in some inlining contexts. For example, `zk_mont_mul(w, w, w)` in a minimal kernel returned garbage for 5·5. Turning off inlining, or optimisation (`-G`), fixed it; lower ptxas optimisation levels did not. The same source compiled to PTX and finished by the driver's newer compiler (CUDA 13.2) was correct, at the same speed.
+  - **What happened:** with NVRTC 12.8 on this machine's sm_120 (Blackwell) GPU, the machine code NVRTC generated for the 254-bit modules computed wrong Montgomery products in some inlining contexts. For example, `zk_mont_mul(w, w, w)` in a minimal kernel returned garbage for 5·5. Turning off inlining, or optimisation (`-G`), fixed it; lower ptxas optimisation levels did not. The same source compiled to PTX and finished by the driver's newer compiler (CUDA 13.2) was correct, at the same speed. NVRTC 12.9 (tested under WSL2 on the same GPU) produces correct machine code even on CuPy's default path, so the bug looks specific to 12.8.
   - **The fix:** `gpu_backend.compile_module` builds these modules that way: PTX from NVRTC, machine code from the driver. If the driver is older than NVRTC and cannot load its PTX, it falls back to NVRTC's machine code.
   - **The guard:** every 254-bit module checks its kernels against Python integers when first loaded and raises an error if they disagree, so a miscompile fails loudly instead of producing wrong field elements.
   - **The tests:** a regression test runs the exact kernel shape that was miscompiled. Every deliberate kernel break tried (12 of them) is rejected by the self-test.
