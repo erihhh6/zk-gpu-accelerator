@@ -80,8 +80,8 @@ def check_backend() -> list[Check]:
 
 
 def check_field256() -> Check:
-    """Compile and self-test the 256-bit kernels (fields and curve points), and say how they were built."""
-    from zkgpu import curve_gpu, gpu_backend
+    """Compile and self-test the 256-bit kernels (fields, curve points, MSM), and say how they were built."""
+    from zkgpu import curve_gpu, gpu_backend, msm_gpu
     from zkgpu.field256_gpu import BN254_FQ, BN254_FR
 
     major, minor = gpu_backend.nvrtc_version()
@@ -92,6 +92,7 @@ def check_field256() -> Check:
         for field in (BN254_FR, BN254_FQ):
             field.compile()
         curve_gpu.compile_kernels()
+        msm_gpu.compile_kernels()
     except RuntimeError as exc:
         return Check(FAIL, "256-bit kernels", f"{exc} ({how}; {versions})")
     return Check(OK, "256-bit kernels", f"compiled ({how}; {versions}) and passed their self-test")

@@ -57,6 +57,12 @@ _POINT_SOURCE = r"""
 // A Jacobian point is 12 limbs: X = p[0..3], Y = p[4..7], Z = p[8..11]; an
 // affine point is 8: x, y. Every function reads all of its inputs before
 // writing r, so r may alias an input (accumulating in place is safe).
+//
+// The three point functions are __noinline__: each holds a dozen or more
+// fully unrolled 256-bit multiplications, and inlining them at every call
+// site made zkgpu.msm_gpu's module 2.5 MB of PTX that took ~29 s to compile
+// on first use. As calls, it is 0.5 MB and ~5 s, for ~4% more run time
+// (measured on an RTX 5050).
 
 __device__ __forceinline__ bool zk_is_zero(const u64 a[4]) {
     return (a[0] | a[1] | a[2] | a[3]) == 0;  // rows are canonical, so zero is all-zero limbs
@@ -84,7 +90,7 @@ __device__ __forceinline__ void zk_store_point(const u64 x[4], const u64 y[4], c
 // 2 (X1, Y1, Z1), EFD dbl-2009-l: A = X1^2, B = Y1^2, C = B^2,
 // D = 2((X1 + B)^2 - A - C), E = 3A, F = E^2, X3 = F - 2D,
 // Y3 = E (D - X3) - 8C, Z3 = 2 Y1 Z1.
-__device__ void zk_jac_double(const u64 p[12], u64 r[12]) {
+__device__ __noinline__ void zk_jac_double(const u64 p[12], u64 r[12]) {
     const u64 *x1 = p, *y1 = p + 4, *z1 = p + 8;
     if (zk_is_zero(z1) || zk_is_zero(y1)) {
         // The identity, or a vertical tangent: only a point of order 2 has
@@ -121,7 +127,7 @@ __device__ void zk_jac_double(const u64 p[12], u64 r[12]) {
 // U1 = X1 Z2Z2, U2 = X2 Z1Z1, S1 = Y1 Z2 Z2Z2, S2 = Y2 Z1 Z1Z1, H = U2 - U1,
 // I = (2H)^2, J = H I, r = 2(S2 - S1), V = U1 I, X3 = r^2 - J - 2V,
 // Y3 = r (V - X3) - 2 S1 J, Z3 = ((Z1 + Z2)^2 - Z1Z1 - Z2Z2) H.
-__device__ void zk_jac_add(const u64 p[12], const u64 q[12], u64 r[12]) {
+__device__ __noinline__ void zk_jac_add(const u64 p[12], const u64 q[12], u64 r[12]) {
     const u64 *x1 = p, *y1 = p + 4, *z1 = p + 8;
     const u64 *x2 = q, *y2 = q + 4, *z2 = q + 8;
     if (zk_is_zero(z1)) {
@@ -180,7 +186,7 @@ __device__ void zk_jac_add(const u64 p[12], const u64 q[12], u64 r[12]) {
 // madd-2007-bl: Z1Z1 = Z1^2, U2 = x2 Z1Z1, S2 = y2 Z1 Z1Z1, H = U2 - X1,
 // HH = H^2, I = 4 HH, J = H I, r = 2(S2 - Y1), V = X1 I, X3 = r^2 - J - 2V,
 // Y3 = r (V - X3) - 2 Y1 J, Z3 = (Z1 + H)^2 - Z1Z1 - HH.
-__device__ void zk_jac_add_affine(const u64 p[12], const u64 q[8], u64 r[12]) {
+__device__ __noinline__ void zk_jac_add_affine(const u64 p[12], const u64 q[8], u64 r[12]) {
     const u64 *x1 = p, *y1 = p + 4, *z1 = p + 8;
     const u64 *x2 = q, *y2 = q + 4;
     if (zk_is_zero(z1)) {
@@ -271,9 +277,20 @@ _KERNEL_NAMES = ("zk_g1_add", "zk_g1_add_affine", "zk_g1_double")
 _compiled: dict[str, Any] = {}  # filled on first use, emptied again if the self-test fails
 
 
+def cuda_source() -> str:
+    """
+    CUDA C++ for BN254 G1: BN254_FQ's field code plus the point formulas.
+
+    For modules that build on the point arithmetic (zkgpu.msm_gpu appends its
+    bucket kernels). Provides zk_jac_add, zk_jac_add_affine, zk_jac_double and
+    zk_set_identity on 12-limb Jacobian / 8-limb affine points.
+    """
+    return BN254_FQ.cuda_source() + _POINT_SOURCE
+
+
 def _kernels() -> dict[str, Any]:  # gpu-only
     if not _compiled:
-        module = compile_module(BN254_FQ.cuda_source() + _POINT_SOURCE, "zkgpu_curve")
+        module = compile_module(cuda_source(), "zkgpu_curve")
         _compiled.update({name: module.get_function(name) for name in _KERNEL_NAMES})
         try:
             _self_test()

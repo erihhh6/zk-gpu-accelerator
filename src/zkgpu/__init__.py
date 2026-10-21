@@ -13,7 +13,7 @@ ntt         : Number Theoretic Transform — Cooley-Tukey CPU implementation
 domain      : Radix-2 evaluation domains over BN254 Fr: FFT, coset FFT, Z_H
 ntt_gpu     : NTT on GPU via vectorized CuPy butterflies
 msm         : Multi-Scalar Multiplication on CPU (naive + Straus/Shamir)
-msm_gpu     : Pippenger MSM with GPU scalar-window extraction (point math on CPU)
+msm_gpu     : Pippenger MSM on GPU: digits, bucket accumulation and reduction (CPU fallback)
 
 GPU modules are not imported here: importing them probes CUDA, which should
 only happen for callers that actually want the GPU paths.

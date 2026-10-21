@@ -24,7 +24,7 @@ The two most expensive steps of a Groth16 or PLONK prover are the MSM and the NT
 | **Field multiplication**, 254-bit | BN254's real fields: Fr for polynomials, Fq for curve points | The whole operation (CUDA Montgomery kernel) | **914x** with data on the GPU, but **0.59x** from and to Python ints (1M elements), against Python ints |
 | **NTT**, 64-bit | Polynomial arithmetic (Groth16, PLONK) | Every butterfly stage, for moduli below 2⁶³ | **142.9x** with data on the GPU, **65.7x** including copies (2²⁰ elements) |
 | **NTT**, 254-bit | The same, over BN254's real scalar field | Every butterfly stage, one CUDA kernel per stage | **1,883x** with data on the GPU, **18.8x** from and to Python ints (2¹⁸ elements), against Python ints; 4.0 ms at 2²⁰ |
-| **MSM**, BN254 G1 | Groth16's linear combinations of curve points | Only the window-digit extraction | **1.0x** (10,000 points); all curve arithmetic is Python on the CPU |
+| **MSM**, BN254 G1 | Groth16's linear combinations of curve points | Pippenger's digits, bucket accumulation and bucket reduction; the final window combination stays on the CPU | Not yet in the published run below (which predates the GPU buckets, at 1.0x); the next benchmark commit measures it |
 
 Measured on an NVIDIA GeForce RTX 5050 Laptop GPU against NumPy and Python ints on an AMD Ryzen 7 260; see [Benchmark results](#benchmark-results).
 
@@ -33,11 +33,11 @@ Measured on an NVIDIA GeForce RTX 5050 Laptop GPU against NumPy and Python ints 
 This is a tested prototype, not yet a GPU prover for BN254:
 
 - **BN254's NTT runs on the GPU** (`BN254_FR.ntt` in `zkgpu.field256_gpu`, on data kept on the GPU), but `Radix2Domain` itself still runs on the CPU. The older GPU NTT (`zkgpu.ntt_gpu`) uses 64-bit integers, so it only works over primes below 2⁶³; its benchmarks use 998244353.
-- **The MSM gains are algorithmic.** Pippenger is 7.2x faster than the naive method at 1,000 points, and Jacobian coordinates made every MSM 18–28x faster. The GPU contributes nothing measurable yet. BN254 point addition and doubling now run on the GPU (`zkgpu.curve_gpu`), but the MSM does not use them yet.
+- **The MSM now runs on the GPU.** On the CPU, Pippenger is 7.2x faster than the naive method at 1,000 points, and Jacobian coordinates made every MSM 18–28x faster. `msm_pippenger_gpu` now runs the same algorithm's bucket accumulation and reduction on the GPU, using `zkgpu.curve_gpu`'s point kernels. Its published numbers come with the next benchmark run.
 - **The baselines are fair, but they are not the fastest CPU code possible.** Each GPU path is compared with the best CPU code this package has for the same job, which is the right comparison for it. Optimised native libraries (C++/Rust, multithreaded) would be considerably faster and would shrink these ratios. That matters most for BN254, where the baseline is interpreted Python integers, so the 914x and 1,883x overstate the gain over a good CPU library.
 - **A single 254-bit operation only pays off on data that stays on the GPU.** Converting between Python ints and the GPU's format costs more than one multiplication (see [below](#field-multiplication-254-bit-bn254-fr)). An NTT does enough work per element to absorb that cost: even from and to Python ints, it is 18.8x faster at 2¹⁸.
 
-The next step uses those point kernels for the MSM's bucket accumulation, its most expensive part.
+The next step benchmarks the GPU MSM and publishes the results.
 
 ---
 
@@ -127,6 +127,8 @@ One multiplication per element is too little work to pay for moving the data, so
 - **2²⁰ is GPU-only,** because the CPU would take several seconds per call. Its output is verified by a round trip plus three outputs recomputed from the definition NTT(a)[k] = a(ωᵏ), because a round trip alone cannot detect a wrong root of unity.
 
 ### MSM (BN254 G1, uniformly random 254-bit scalars)
+
+> These numbers were measured before the GPU took over bucket accumulation and reduction. At that point only digit extraction ran on the GPU, hence the 1.0x. The next benchmark run replaces them.
 
 | N | Window | Naive (ms) | Straus/Shamir (ms) | Pippenger, CPU (ms) | Pippenger, GPU digits (ms) | GPU contribution |
 |---:|---:|---:|---:|---:|---:|---:|
@@ -426,7 +428,7 @@ zk-gpu-accelerator/
 │   ├── domain.py          # Radix-2 evaluation domains: FFT, coset FFT, Z_H (BN254 Fr)
 │   ├── ntt_gpu.py         # NTT GPU — vectorized butterflies, cached twiddles
 │   ├── msm.py             # MSM CPU — naive + Straus/Shamir double-and-add
-│   └── msm_gpu.py         # MSM — Pippenger (CPU buckets) + GPU window extraction
+│   └── msm_gpu.py         # MSM — Pippenger on the GPU: digits, sorted buckets, segmented reduction
 ├── benchmarks/
 │   ├── _harness.py        # timing method, result checks, run metadata
 │   ├── bench_field.py
@@ -460,8 +462,17 @@ The `src/` layout means the code is only importable once installed (`pip install
 ## Implementation Notes
 
 - **Field**: BN254 scalar field (r ≈ 2²⁵⁴). All Fp ops use Python's built-in `pow()` for fast modular exponentiation. The GPU field ops (`zkgpu/field_gpu.py`) accept any modulus `2 ≤ mod < 2⁶³` and any int64 inputs, which they reduce first. Products use a plain int64 multiply up to `mod ≤ 3,037,000,500`, and an exact 128-bit-wide routine above that, built on `__umul64hi` because NVRTC on Windows has no `__int128`. The GPU benchmark uses `MOD = 998244353`.
-- **NTT**: Cooley-Tukey iterative with bit-reversal permutation. The default modulus is `998244353 = 119·2²³ + 1` (N ≤ 2²³), but any odd prime works up to its 2-adicity, including BN254's scalar field r (2-adicity 28, N ≤ 2²⁸). Roots of unity come from the field's smallest quadratic non-residue, which yields primitive power-of-two roots without factoring p − 1, and every root is checked to be primitive. The GPU version (`zkgpu/ntt_gpu.py`) handles primes below 2⁶³: it caches its twiddle table and bit-reversal index on the device for each size, and uses `zkgpu/field_gpu.py` for exact modular arithmetic. BN254's r does not fit in int64, so it is CPU-only for now.
-- **MSM**: Naive and Straus/Shamir simultaneous double-and-add on CPU (one shared accumulator: ~254 doublings in total instead of N·254, 2.3–2.5× faster than naive for 254-bit scalars in the benchmark above); Pippenger bucket method: scalars are reduced mod r and split into four 64-bit limbs, one GPU kernel extracts every window digit at once (a single device-to-host copy), and bucket accumulation plus Horner's-rule window combination (~254 doublings) stay on the CPU. All BN254 point arithmetic uses Python's arbitrary-precision integers (254-bit coordinates).
+- **NTT**: Cooley-Tukey iterative with bit-reversal permutation. The default modulus is `998244353 = 119·2²³ + 1` (N ≤ 2²³), but any odd prime works up to its 2-adicity, including BN254's scalar field r (2-adicity 28, N ≤ 2²⁸). Roots of unity come from the field's smallest quadratic non-residue, which yields primitive power-of-two roots without factoring p − 1, and every root is checked to be primitive. The GPU version (`zkgpu/ntt_gpu.py`) handles primes below 2⁶³: it caches its twiddle table and bit-reversal index on the device for each size, and uses `zkgpu/field_gpu.py` for exact modular arithmetic. BN254's r does not fit in int64; its GPU NTT is `Field256.ntt` in `zkgpu/field256_gpu.py`.
+- **MSM (CPU)**: Naive, and Straus/Shamir simultaneous double-and-add with one shared accumulator: about 254 doublings in total instead of N·254, and 2.3–2.5× faster than naive for 254-bit scalars in the benchmark above.
+- **MSM (GPU Pippenger)**: `msm_pippenger_gpu` reduces the scalars mod r, validates every point, and uploads both. On the GPU:
+  - **Digits:** one kernel extracts every w-bit window digit.
+  - **Bucket assignment:** a sort of the (window, digit) keys makes each bucket's points contiguous, and a binary search finds where each bucket starts.
+  - **Bucket accumulation:** one thread per bucket adds its points with mixed additions. That is roughly one point addition per point per window, the bulk of the work.
+  - **Bucket reduction:** a single running sum per window would leave one thread with 2^(w+1) sequential additions. Instead, each window is split into 32-bucket segments. Each segment's thread computes its running sums plus a small scalar-multiple correction, and a last kernel adds the segments up.
+
+  Only the final Horner combination of the windows (about 254 doublings) runs on the CPU. Without a GPU, the identical algorithm runs on Python integers.
+  - **Load balance:** uniformly random scalars, as in real proofs, spread points evenly over the buckets. A skewed input, such as all scalars equal, puts a whole window into one bucket and serialises it.
+  - **Tests:** the MSM kernels are self-tested at load like the others. Eight deliberate breaks across the kernels and the host-side sorting were all caught by both the self-test and the tests.
 - **Curve arithmetic**: `Point` is affine, but scalar multiplication and every MSM run in Jacobian coordinates (X, Y, Z) ↦ (X/Z², Y/Z³). Those additions and doublings need no modular inverse, so a whole chain of operations pays for one inverse at the end, when converting back. The formulas are the Explicit-Formulas Database's a = 0 versions (`dbl-2009-l`, `add-2007-bl`, `madd-2007-bl`). Remaining inverses use `pow(a, -1, p)` (extended Euclid, about 42 multiplications) instead of Fermat's `a^(p−2)` (about 251). Together these made scalar multiplication about 30× faster and the MSMs 18–28× faster than affine arithmetic, with identical results. Every result is converted back through `Point`, so it is re-validated to lie on the curve.
 - **254-bit field (GPU)**: `zkgpu/field256_gpu.py` stores each element as four 64-bit limbs, in Montgomery form (a·R mod p, R = 2²⁵⁶).
   - **Multiplication** is CIOS Montgomery multiplication (Koç, Acar and Kaliski), one thread per element. Each step adds a·bᵢ plus a multiple of p that clears the lowest word, so no division is ever needed. 64×64→128-bit products come from `__umul64hi`.

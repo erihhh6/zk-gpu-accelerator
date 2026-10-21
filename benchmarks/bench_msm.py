@@ -1,16 +1,16 @@
 """
 benchmarks/bench_msm.py — BN254 G1 MSM algorithms on real 254-bit scalars.
 
-Implementations (all point arithmetic is Python ints on the CPU)
-------------------------------------------------------------------
+Implementations
+---------------
 naive          zkgpu.msm.msm_naive: one scalar multiplication per point
 straus         zkgpu.msm.msm_double_and_add: shared accumulator (Straus/Shamir)
-pippenger_cpu  zkgpu.msm_gpu.msm_pippenger_gpu with its CPU digit extraction
-pippenger_gpu  the same with GPU digit extraction — the only GPU work in any MSM
+pippenger_cpu  zkgpu.msm_gpu.msm_pippenger_gpu on its CPU path (Python ints)
+pippenger_gpu  the same function on the GPU: digits, bucket accumulation and
+               bucket reduction in CUDA; the window combination stays on the CPU
 
-The differences between rows are algorithmic; pippenger_cpu vs pippenger_gpu
-isolates the GPU's contribution, which is negligible until the curve
-arithmetic itself moves to CUDA.
+The differences between the CPU rows are algorithmic; pippenger_cpu vs
+pippenger_gpu runs one algorithm on both, so it isolates the GPU's contribution.
 
 Inputs: scalars uniform in [0, r); points P_i = P_0 + i·S for random P_0, S.
 The progression is as good as independent random points for MSM cost (the
@@ -86,7 +86,7 @@ def _measure(n: int, budget: float) -> dict[str, Any]:
     check_equal("pippenger_cpu", got, expected)
 
     if GPU_AVAILABLE:
-        msm_pippenger_gpu(xs[:2], ys[:2], scalars[:2], window_size=w)  # compile the digit kernel
+        msm_pippenger_gpu(xs[:2], ys[:2], scalars[:2], window_size=w)  # compile the kernels untimed
         ms["pippenger_gpu"], got = time_ms(
             lambda: msm_pippenger_gpu(xs, ys, scalars, window_size=w),
             budget_s=budget,

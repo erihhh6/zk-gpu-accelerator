@@ -163,7 +163,7 @@ def test_double_and_add_with_identity_points():
 
 
 # ------------------------------------------------------------------
-# Pippenger (msm_pippenger_gpu): GPU digit extraction and CPU fallback
+# Pippenger (msm_pippenger_gpu): GPU buckets and the CPU fallback
 # ------------------------------------------------------------------
 
 
@@ -211,9 +211,56 @@ def test_pippenger_doublings_are_linear_in_scalar_bits(backend, monkeypatch):
     """Horner's rule: w·(windows - 1) = 248 doublings for w = 8, not a loop per window (3968)."""
     points = [G * k for k in (3, 5, 7, 11)]
     scalars = [2**250 + k for k in range(len(points))]
+    if backend == "gpu":
+        msm_gpu_module.compile_kernels()  # its self-test runs an MSM too: keep it out of the count
     calls = count_doublings(monkeypatch)
     pippenger(points, scalars)
     assert 8 * 31 <= calls["n"] <= 256 + len(points)  # w·(windows - 1) = 248 for w = 8
+
+
+@pytest.fixture(scope="module")
+def large_inputs():
+    """Hundreds of points with full 254-bit scalars: enough to fill many buckets per window."""
+    rng = random.Random(37)
+    step = G * rng.randrange(1, R)
+    points = [G * rng.randrange(1, R)]
+    for _ in range(399):
+        points.append(points[-1] + step)  # distinct points, far cheaper than 400 scalar multiplications
+    scalars = [rng.randrange(R) for _ in points]
+    return points, scalars, msm_double_and_add(points, scalars)
+
+
+@pytest.mark.gpu
+@pytest.mark.parametrize("window_size", [2, 6, 9, 13, 16])
+def test_gpu_pippenger_at_scale(window_size, large_inputs):
+    """
+    The GPU path's parallel pieces: sorted buckets with several points each,
+    and windows split into reduction segments (2^w / 32 of them per window,
+    so up to 2048 at w = 16).
+    """
+    points, scalars, expected = large_inputs
+    assert pippenger(points, scalars, window_size) == expected
+
+
+@pytest.mark.gpu
+def test_gpu_pippenger_with_one_heavy_bucket_per_window():
+    """Equal scalars put every point of a window into one bucket, which one thread adds up alone."""
+    points = [G * k for k in range(1, 201)]
+    scalar = 2**200 + 12345
+    assert pippenger(points, [scalar] * len(points)) == G * (sum(range(1, 201)) * scalar % R)
+
+
+@pytest.mark.gpu
+def test_miscompiled_msm_kernels_fail_their_self_test(monkeypatch):
+    """A wrong segment correction (simulating a miscompile) is caught when the kernels load."""
+    old = "zk_jac_mul_small(running, (unsigned int)(first - 1), shifted);"
+    assert msm_gpu_module._MSM_SOURCE.count(old) == 1
+    broken = msm_gpu_module._MSM_SOURCE.replace(old, old.replace("first - 1", "first"))
+    monkeypatch.setattr(msm_gpu_module, "_MSM_SOURCE", broken)
+    monkeypatch.setattr(msm_gpu_module, "_compiled", {})
+    with pytest.raises(RuntimeError, match="failed their self-test"):
+        msm_gpu_module.compile_kernels()
+    assert msm_gpu_module._compiled == {}
 
 
 def test_pippenger_validates_arguments():
