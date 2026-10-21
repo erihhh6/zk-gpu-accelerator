@@ -56,19 +56,28 @@ def _inputs(n: int) -> tuple[list[Point], list[int]]:
 
 
 NAIVE_MAX = 1_000  # naive at 10,000 points costs over ten seconds and shows nothing new
+STRAUS_MAX = 10_000  # Straus at 100,000 points costs about 45 s
 
 
 def _measure(n: int, budget: float) -> dict[str, Any]:
-    """One row: every algorithm at size n, each verified against Straus."""
+    """
+    One row: every algorithm at size n, each verified against a reference.
+
+    The reference is Straus where it runs, and above STRAUS_MAX the CPU
+    Pippenger: the GPU's own algorithm, but implemented independently in
+    Python integers.
+    """
     points, scalars = _inputs(n)
     xs, ys = [p.x for p in points], [p.y for p in points]
     w = pippenger_window(n)
 
     ms: dict[str, float] = {}
+    expected: Point | None = None
     # Pure-Python code has nothing to warm up, so skip the untimed warm-up run
-    ms["straus"], expected = time_ms(
-        lambda: msm_double_and_add(points, scalars), budget_s=budget, max_repeat=3, warmup=False
-    )
+    if n <= STRAUS_MAX:
+        ms["straus"], expected = time_ms(
+            lambda: msm_double_and_add(points, scalars), budget_s=budget, max_repeat=3, warmup=False
+        )
     if n <= NAIVE_MAX:
         ms["naive"], got = time_ms(
             lambda: msm_naive(points, scalars), budget_s=budget, max_repeat=3, warmup=False
@@ -83,23 +92,21 @@ def _measure(n: int, budget: float) -> dict[str, Any]:
             max_repeat=3,
             warmup=False,
         )
+    if expected is None:
+        expected = got
     check_equal("pippenger_cpu", got, expected)
 
     if GPU_AVAILABLE:
         msm_pippenger_gpu(xs[:2], ys[:2], scalars[:2], window_size=w)  # compile the kernels untimed
         ms["pippenger_gpu"], got = time_ms(
-            lambda: msm_pippenger_gpu(xs, ys, scalars, window_size=w),
-            budget_s=budget,
-            max_repeat=3,
-            warmup=False,
-            gpu=True,
+            lambda: msm_pippenger_gpu(xs, ys, scalars, window_size=w), budget_s=budget, gpu=True
         )
         check_equal("pippenger_gpu", got, expected)
     return {"n": n, "window_size": w, "verified": True, "ms": ms}
 
 
 def run_bench(*, quick: bool) -> list[dict[str, Any]]:
-    sizes = [8, 32] if quick else [100, 1_000, 10_000]
+    sizes = [8, 32] if quick else [100, 1_000, 10_000, 100_000]
     rows = []
     for n in sizes:
         rows.append(_measure(n, budget=0.05 if quick else 1.0))

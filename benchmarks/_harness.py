@@ -192,8 +192,16 @@ def _gpu_info() -> dict[str, Any] | None:
     }
 
 
-def collect_metadata(*, quick: bool) -> dict[str, Any]:
+def collect_metadata(*, quick: bool, runs: int = 1) -> dict[str, Any]:
     commit, dirty = _git_commit()
+    method = (
+        "median wall-clock time after one warm-up call, repeated within a time budget; "
+        f"re-measured (up to {MAX_ATTEMPTS} attempts) when the median exceeds {NOISE_RATIO}x the "
+        "fastest sample; GPU timings synchronise the device before the clock stops; 'gpu' "
+        "starts from device-resident data, 'gpu_e2e' includes host<->device copies"
+    )
+    if runs > 1:
+        method += f"; the suite ran {runs} complete passes and each time is their median (all in 'ms_runs')"
     return {
         "timestamp_utc": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
         "git_commit": commit,
@@ -207,10 +215,6 @@ def collect_metadata(*, quick: bool) -> dict[str, Any]:
         "gpu": _gpu_info(),
         "gpu_unavailable_reason": GPU_UNAVAILABLE_REASON,
         "quick": quick,
-        "method": (
-            "median wall-clock time after one warm-up call, repeated within a time budget; "
-            f"re-measured (up to {MAX_ATTEMPTS} attempts) when the median exceeds {NOISE_RATIO}x the "
-            "fastest sample; GPU timings synchronise the device before the clock stops; 'gpu' "
-            "starts from device-resident data, 'gpu_e2e' includes host<->device copies"
-        ),
+        "runs": runs,
+        "method": method,
     }

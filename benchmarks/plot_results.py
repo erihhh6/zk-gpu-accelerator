@@ -11,7 +11,7 @@ Produces, each in a light and a "_dark" variant (for GitHub's <picture> switch):
                           and BN254's 254-bit Fr (right), and the MSM
   speedup_curve.png       what the GPU buys over the best CPU code running the
                           same algorithm (NumPy for 64-bit, Python ints for
-                          254-bit, CPU-digit Pippenger for MSM)
+                          254-bit, CPU Pippenger for MSM)
 
 Design: colour follows the implementation and never its rank; every series also
 has its own marker shape (a second channel for colour-vision deficiency and for
@@ -74,7 +74,7 @@ SERIES = {
     "gpu_e2e_ints": ("GPU incl. Python int conversion and copies", 2, "^"),
     "python": ("Pure Python (reference only)", 3, "D"),
     "gpu_cold": ("GPU first call (builds caches)", 4, "v"),
-    "pippenger_gpu": ("Pippenger, GPU digit extraction", 0, "o"),
+    "pippenger_gpu": ("Pippenger, GPU", 0, "o"),
     "pippenger_cpu": ("Pippenger, CPU", 1, "s"),
     "straus": ("Straus / Shamir", 2, "^"),
     "naive": ("Naive (one scalar mult per point)", 3, "D"),
@@ -109,7 +109,7 @@ SPEEDUP_TITLES = {
     "field256": "254-bit field multiplication: GPU vs Python ints",
     "ntt": "64-bit NTT: GPU vs NumPy",
     "ntt256": "254-bit NTT: GPU vs Python ints",
-    "msm": "MSM Pippenger: GPU vs CPU digit extraction",
+    "msm": "MSM Pippenger: GPU vs CPU",
 }
 SPEEDUP_TICKS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000)
 
@@ -238,7 +238,7 @@ def plot_latency(results: dict[str, Any], theme: dict[str, Any]) -> Any:
             ax.text(
                 0.98,
                 0.04,
-                "Pippenger CPU and GPU-digit lines coincide",
+                "Pippenger CPU and GPU lines coincide",
                 transform=ax.transAxes,
                 ha="right",
                 va="bottom",

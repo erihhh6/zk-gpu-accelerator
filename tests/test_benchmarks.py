@@ -44,6 +44,26 @@ def test_quick_run_writes_verified_results(quick_results):
             assert has_gpu_column == GPU_AVAILABLE
 
 
+def test_merge_runs_takes_per_cell_medians_and_keeps_every_pass():
+    passes = [
+        [{"n": 8, "verified": True, "ms": {"cpu": 10.0, "gpu": 1.0}}],
+        [{"n": 8, "verified": True, "ms": {"cpu": 12.0, "gpu": 9.0}}],  # one disturbed GPU timing
+        [{"n": 8, "verified": True, "ms": {"cpu": 11.0, "gpu": 1.2}}],
+    ]
+    [row] = run_all.merge_runs(passes)
+    assert row["ms"] == {"cpu": 11.0, "gpu": 1.2}  # the disturbed 9.0 does not reach the result
+    assert row["ms_runs"] == {"cpu": [10.0, 12.0, 11.0], "gpu": [1.0, 9.0, 1.2]}
+    assert run_all.merge_runs(passes[:1]) == passes[0]  # a single pass is published as measured
+
+
+def test_several_passes_end_to_end(tmp_path):
+    data = run_all.run(quick=True, output=tmp_path / "two.json", runs=2)
+    assert data["meta"]["runs"] == 2 and "median" in data["meta"]["method"]
+    assert all(len(values) == 2 for row in data["ntt"] for values in row["ms_runs"].values())
+    with pytest.raises(ValueError, match="at least 1"):
+        run_all.run(quick=True, output=tmp_path / "zero.json", runs=0)
+
+
 def test_mismatched_results_fail_the_run():
     with pytest.raises(RuntimeError, match="mismatch"):
         check_equal("broken", [1, 2], [1, 3])

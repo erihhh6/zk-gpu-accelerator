@@ -146,6 +146,7 @@ One multiplication per element is too little work to pay for moving the data, so
 - Each implementation is timed as the median of repeated calls after one untimed warm-up call, within a time budget.
 - If the median exceeds 1.25x the fastest sample, a sign of interference from other processes, the measurement is repeated, up to three attempts.
 - GPU timings synchronise the device before the clock stops.
+- With `--runs N`, the whole suite runs N times, one complete pass after another, and each published time is the median across the passes; every pass's value is kept in the JSON. Re-measuring catches uneven samples, but twice a disturbance slowed every sample of one measurement alike (28.7 ms for a 1.9 ms NTT; 5.5 ms for a 0.35 ms 254-bit multiplication). Passes minutes apart keep such a disturbance to one pass, where the median discards it.
 - The NumPy NTT is the same algorithm as the GPU version, vectorised one stage at a time, with the same per-size caches. For BN254 it runs on Python ints.
 
 The details are in `benchmarks/_harness.py`. To reproduce on your own machine, see [Run benchmarks](#run-benchmarks).
@@ -374,7 +375,8 @@ Scalars may be any integers (negative, or larger than r); they are reduced mod r
 ### Run benchmarks
 
 ```bash
-python -m benchmarks.run_all           # full run (~35 s) -> results/all_results.json + summary table
+python -m benchmarks.run_all           # full run (~50 s) -> results/all_results.json + summary table
+python -m benchmarks.run_all --runs 3  # how the published results are made: median of 3 complete passes
 python -m benchmarks.run_all --quick   # smoke test in seconds -> results/quick_results.json (gitignored)
 python benchmarks/plot_results.py      # charts, light and dark, next to the JSON
 python demo/prover_simulation.py       # Groth16 prover timing simulation
