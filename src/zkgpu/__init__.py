@@ -12,7 +12,7 @@ curve       : BN254 elliptic curve point operations (affine coordinates)
 ntt         : Number Theoretic Transform — Cooley-Tukey CPU implementation
 domain      : Radix-2 evaluation domains over BN254 Fr: FFT, coset FFT, Z_H
 ntt_gpu     : NTT on GPU via vectorized CuPy butterflies
-msm         : Multi-Scalar Multiplication on CPU (naive + Straus/Shamir)
+msm         : Multi-Scalar Multiplication on CPU (naive, Straus/Shamir, Pippenger)
 msm_gpu     : Pippenger MSM on GPU: digits, bucket accumulation and reduction (CPU fallback)
 
 GPU modules are not imported here: importing them probes CUDA, which should
@@ -24,7 +24,7 @@ __version__ = "0.1.0"  # single source of truth; pyproject.toml reads it
 from zkgpu.curve import G, P, Point, scalar_mul
 from zkgpu.domain import Radix2Domain
 from zkgpu.field import FIELD_MODULUS, Fp, batch_add, batch_mul
-from zkgpu.msm import msm_double_and_add, msm_naive
+from zkgpu.msm import msm_double_and_add, msm_naive, msm_pippenger
 from zkgpu.ntt import MOD as NTT_MOD, ntt, polynomial_mul
 
 __all__ = [
@@ -47,4 +47,5 @@ __all__ = [
     # msm
     "msm_naive",
     "msm_double_and_add",
+    "msm_pippenger",
 ]

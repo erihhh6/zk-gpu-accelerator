@@ -29,21 +29,8 @@ from zkgpu import msm_gpu as msm_gpu_module
 from zkgpu.curve import G, Point
 from zkgpu.field import FIELD_MODULUS as R
 from zkgpu.gpu_backend import GPU_AVAILABLE, GpuFallbackWarning
-from zkgpu.msm import msm_double_and_add, msm_naive
+from zkgpu.msm import msm_double_and_add, msm_naive, pippenger_window_size
 from zkgpu.msm_gpu import msm_pippenger_gpu
-
-SCALAR_BITS = R.bit_length()
-
-
-def pippenger_window(n: int) -> int:
-    """
-    Window size minimising Pippenger's estimated point additions for n points.
-
-    Per window: n additions to fill the buckets plus about 2·2^w for the
-    running sums; ceil(254 / w) windows. The default w = 8 is far from optimal
-    at small n, which would make Pippenger look worse than it is.
-    """
-    return min(range(1, 17), key=lambda w: -(-SCALAR_BITS // w) * (n + 2 ** (w + 1)))
 
 
 def _inputs(n: int) -> tuple[list[Point], list[int]]:
@@ -69,7 +56,7 @@ def _measure(n: int, budget: float) -> dict[str, Any]:
     """
     points, scalars = _inputs(n)
     xs, ys = [p.x for p in points], [p.y for p in points]
-    w = pippenger_window(n)
+    w = pippenger_window_size(n)  # the library's default, made explicit for the results
 
     ms: dict[str, float] = {}
     expected: Point | None = None

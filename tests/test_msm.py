@@ -9,7 +9,7 @@ from zkgpu import curve as curve_module, msm as msm_module, msm_gpu as msm_gpu_m
 from zkgpu.curve import G, P as CURVE_P, Point
 from zkgpu.field import FIELD_MODULUS as R
 from zkgpu.gpu_backend import cp
-from zkgpu.msm import msm_double_and_add, msm_naive
+from zkgpu.msm import msm_double_and_add, msm_naive, msm_pippenger, pippenger_window_size
 from zkgpu.msm_gpu import msm_pippenger_gpu
 
 pytestmark = pytest.mark.filterwarnings("ignore::zkgpu.gpu_backend.GpuFallbackWarning")
@@ -52,7 +52,6 @@ def count_doublings(monkeypatch) -> dict[str, int]:
         return original(j)
 
     monkeypatch.setattr(msm_module, "jacobian_double", counting_double)
-    monkeypatch.setattr(msm_gpu_module, "jacobian_double", counting_double)
     return calls
 
 
@@ -161,6 +160,47 @@ def test_double_and_add_full_size_and_oversized_scalars():
 def test_double_and_add_with_identity_points():
     INF = Point.identity()
     assert msm_double_and_add([INF, G, INF], [5, 3, -2]) == G * 3
+
+
+# ------------------------------------------------------------------
+# Pippenger on the CPU (msm_pippenger)
+# ------------------------------------------------------------------
+
+
+def test_pippenger_window_follows_cost_model():
+    assert [pippenger_window_size(n) for n in (0, 100, 1_000, 10_000, 100_000)] == [1, 5, 7, 10, 13]
+
+
+@pytest.mark.parametrize("window_size", [None, 1, 3, 8, 16])
+def test_cpu_pippenger_matches_naive(window_size, msm_inputs):
+    points, scalars, expected = msm_inputs
+    assert msm_pippenger(points, scalars, window_size=window_size) == expected
+
+
+def test_cpu_pippenger_full_size_scalars(full_size_inputs):
+    points, scalars, expected = full_size_inputs
+    assert msm_pippenger(points, scalars) == expected
+
+
+def test_cpu_pippenger_edge_cases():
+    INF = Point.identity()
+    assert msm_pippenger([], []) == INF
+    assert msm_pippenger([INF, INF], [5, 7]) == INF
+    assert msm_pippenger([INF, G, INF], [5, 3, -2]) == G * 3  # identity points are skipped
+    assert msm_pippenger([G, -G], [7, 7]) == INF  # P and -P cancel in one bucket
+    assert msm_pippenger([G, G], [5, 5]) == G * 10  # P twice in one bucket: the doubling branch
+    for scalar in (-5, R, R + 7, 2**300 + 1):  # reduced mod r, like the GPU version
+        assert msm_pippenger([G * 3], [scalar]) == G * 3 * (scalar % R)
+
+
+def test_cpu_pippenger_validates_arguments():
+    with pytest.raises(ValueError, match="Length mismatch"):
+        msm_pippenger([G, G], [1])
+    for bad_window in (0, 17):
+        with pytest.raises(ValueError, match="window_size"):
+            msm_pippenger([G], [1], window_size=bad_window)
+    with pytest.raises(TypeError):
+        msm_pippenger([G], [1], window_size=2.0)
 
 
 # ------------------------------------------------------------------

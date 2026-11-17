@@ -18,9 +18,9 @@ msm_pippenger_gpu computes Σ sᵢ·Pᵢ with Pippenger's bucket method:
   5. CPU: combine the window sums with Horner's rule (about 254 doublings)
      and convert the result to an affine Point with a single inverse.
 
-Without a usable GPU every step runs on the CPU with Python integers (with
-a GpuFallbackWarning): the same algorithm, so the two are directly
-comparable. The GPU kernels are built with gpu_backend.compile_module and
+Without a usable GPU, the call warns (GpuFallbackWarning) and runs
+zkgpu.msm.msm_pippenger's implementation on Python integers: the same
+algorithm, so the two are directly comparable. The GPU kernels are built with gpu_backend.compile_module and
 checked against a CPU MSM when first loaded.
 
 Load balance: buckets can be very uneven, even for random scalars. Scalars
@@ -44,28 +44,24 @@ from typing import Any, SupportsIndex
 import numpy as np
 
 from zkgpu import curve_gpu
-from zkgpu.curve import (
-    JACOBIAN_IDENTITY,
-    G,
-    Jacobian,
-    Point,
-    from_jacobian,
-    jacobian_add,
-    jacobian_add_affine,
-    jacobian_double,
-)
+from zkgpu.curve import G, Jacobian, Point, from_jacobian
 from zkgpu.field import FIELD_MODULUS as _GROUP_ORDER  # BN254's r: order of G1
 from zkgpu.field256_gpu import BN254_FQ, LIMBS as _FIELD_LIMBS
 from zkgpu.gpu_backend import GPU_AVAILABLE as _gpu_available, compile_module, cp, warn_cpu_fallback
-from zkgpu.msm import msm_double_and_add
+
+# The CPU Pippenger lives in zkgpu.msm; the GPU path shares its window
+# combination, and the fallback is that implementation itself
+from zkgpu.msm import (
+    _check_window_size,
+    _combine_windows,
+    _pippenger_affine,
+    msm_double_and_add,
+    pippenger_window_size,
+)
 
 # Reduced scalars are < r < 2^254, so 254 bits and four 64-bit limbs suffice
 _SCALAR_BITS = _GROUP_ORDER.bit_length()
 _LIMBS = 4
-
-# 2^16 buckets per window is far past the useful range for either the CPU
-# or the GPU bucket accumulation; larger windows only burn memory and time.
-_MAX_WINDOW_SIZE = 16
 
 # Buckets per reduction thread: each thread does 2 additions per bucket plus
 # a small scalar multiplication, so this trades thread count against work
@@ -382,48 +378,8 @@ def _window_sums_on_gpu(  # gpu-only
 
 
 # ------------------------------------------------------------------
-# CPU path (fallback, and the same-algorithm reference for the benchmark)
+# Input handling
 # ------------------------------------------------------------------
-
-
-def _cpu_window_digits(scalars: list[int], w: int, num_windows: int) -> list[list[int]]:
-    """digits[win][i] = bits [win·w, win·w + w) of scalars[i] (all scalars in [0, r))."""
-    mask = (1 << w) - 1
-    return [[(s >> (win * w)) & mask for s in scalars] for win in range(num_windows)]
-
-
-def _window_sum(coords: list[tuple[int, int]], digits: list[int], bucket_count: int) -> Jacobian:
-    """Σ digitᵢ·Pᵢ for one window, using 2^w buckets instead of N scalar multiplications."""
-    # Buckets are Jacobian and inputs affine, so filling them uses mixed additions
-    buckets = [JACOBIAN_IDENTITY] * bucket_count  # bucket 0 contributes nothing
-    for (x, y), digit in zip(coords, digits, strict=True):
-        if digit:
-            buckets[digit] = jacobian_add_affine(buckets[digit], x, y)
-
-    # Running-sum trick: Σ k·B_k = Σ_{j≥1} (B_j + B_{j+1} + ...), so two
-    # additions per bucket replace a scalar multiplication per bucket.
-    running = JACOBIAN_IDENTITY
-    total = JACOBIAN_IDENTITY
-    for k in range(bucket_count - 1, 0, -1):
-        running = jacobian_add(running, buckets[k])
-        total = jacobian_add(total, running)
-    return total
-
-
-def _combine_windows(window_sums: list[Jacobian], w: int) -> Jacobian:
-    """
-    Σ 2^(w·win) · window_sums[win], by Horner's rule from the most significant window.
-
-    Shifting the running result by w bits between windows costs
-    w·(windows - 1) ≈ 254 doublings in total, instead of shifting each window
-    sum separately.
-    """
-    acc = window_sums[-1]
-    for win in range(len(window_sums) - 2, -1, -1):
-        for _ in range(w):
-            acc = jacobian_double(acc)
-        acc = jacobian_add(acc, window_sums[win])
-    return acc
 
 
 def _as_ints(values: Iterable[SupportsIndex], name: str) -> list[int]:
@@ -444,7 +400,7 @@ def msm_pippenger_gpu(
     points_y: Iterable[int],
     scalars: Iterable[int],
     *,
-    window_size: int = 8,
+    window_size: int | None = None,
 ) -> Point:
     """
     Pippenger MSM over BN254 G1: digits, buckets and bucket reduction on the GPU.
@@ -458,7 +414,8 @@ def msm_pippenger_gpu(
                          object-dtype array; BN254 coordinates do not fit int64)
     scalars            : any integers, including negative and >= 2^256; they
                          are reduced mod r, which leaves every sᵢ·Pᵢ unchanged
-    window_size        : bits per window (w), 1..16; each window has 2^w buckets
+    window_size        : bits per window (w), 1..16, each window having 2^w
+                         buckets; by default zkgpu.msm.pippenger_window_size(N)
 
     Returns
     -------
@@ -469,9 +426,8 @@ def msm_pippenger_gpu(
     ValueError : if the three inputs differ in length or window_size is out of range
     TypeError  : if a coordinate or scalar is not an integer
     """
-    window_size = operator.index(window_size)
-    if not 1 <= window_size <= _MAX_WINDOW_SIZE:
-        raise ValueError(f"window_size must be in 1..{_MAX_WINDOW_SIZE}, got {window_size}")
+    if window_size is not None:
+        window_size = _check_window_size(window_size)
 
     xs, ys = _as_ints(points_x, "points_x"), _as_ints(points_y, "points_y")
     reduced = [s % _GROUP_ORDER for s in _as_ints(scalars, "scalars")]
@@ -484,13 +440,10 @@ def msm_pippenger_gpu(
 
     # Point() validates every caller-supplied pair is on the curve before use
     coords = [Point(x, y).affine() for x, y in zip(xs, ys, strict=True)]
-    num_windows = -(-_SCALAR_BITS // window_size)  # ceil(254 / w)
-    if _gpu_available:
-        window_sums = _window_sums_on_gpu(  # gpu-only
-            coords, reduced, window_size, num_windows, chunk_len=_CHUNK_LEN
-        )
-    else:
+    w = pippenger_window_size(len(coords)) if window_size is None else window_size
+    if not _gpu_available:
         warn_cpu_fallback("msm_pippenger_gpu", "Pippenger on the CPU (Python integers)")
-        digits = _cpu_window_digits(reduced, window_size, num_windows)
-        window_sums = [_window_sum(coords, d, 1 << window_size) for d in digits]
-    return from_jacobian(_combine_windows(window_sums, window_size))
+        return _pippenger_affine(coords, reduced, w)
+    num_windows = -(-_SCALAR_BITS // w)  # gpu-only
+    window_sums = _window_sums_on_gpu(coords, reduced, w, num_windows, chunk_len=_CHUNK_LEN)  # gpu-only
+    return from_jacobian(_combine_windows(window_sums, w))  # gpu-only

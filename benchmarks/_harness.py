@@ -8,6 +8,12 @@ Timing method
   median is reported. If that median sits well above the fastest sample,
   something else disturbed the run and the measurement is repeated (up to
   three attempts, keeping the least disturbed one).
+- Every GPU measurement starts after GPU_SPIN_UP_S of continuous GPU work.
+  The GPU idles while a CPU baseline runs, and a laptop GPU then drops to a
+  low power state (logged with nvidia-smi on the RTX 5050 here: memory at
+  405-810 MHz instead of 9-11 GHz). A few short kernels do not bring it back,
+  so a 0.3 ms multiplication measured 6-7 ms. A prover keeps the GPU busy, so
+  its working clocks are the ones worth measuring.
 - GPU timings are wall-clock with a device synchronisation before the clock
   stops, i.e. what a caller actually waits for. CUDA events would only time
   the device timeline, and for these Python-orchestrated multi-kernel
@@ -39,10 +45,23 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 NOISE_RATIO = 1.25
 MAX_ATTEMPTS = 3
 
+# Seconds of continuous GPU work before every GPU measurement (see the module docstring)
+GPU_SPIN_UP_S = 0.3
+
 
 # ------------------------------------------------------------------
 # Timing
 # ------------------------------------------------------------------
+
+
+def spin_up_gpu(seconds: float = GPU_SPIN_UP_S) -> None:
+    """Keep the GPU busy for *seconds*, so that it leaves its idle power state before a measurement."""
+    # Memory-bound work: the memory clock is the one that drops furthest
+    x = cp.zeros(2**23, dtype=cp.uint64)  # 64 MiB
+    t0 = time.perf_counter()
+    while time.perf_counter() - t0 < seconds:
+        x += 1
+        cp.cuda.Device().synchronize()
 
 
 def time_ms(
@@ -73,6 +92,8 @@ def time_ms(
             cp.cuda.Device().synchronize()
         return time.perf_counter() - t0
 
+    if gpu:
+        spin_up_gpu()
     if warmup:
         run()
     best: list[float] = []

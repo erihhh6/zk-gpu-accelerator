@@ -8,7 +8,6 @@ import pytest
 
 from benchmarks import run_all
 from benchmarks._harness import check_equal
-from benchmarks.bench_msm import pippenger_window
 from benchmarks.bench_ntt import ntt_numpy
 from benchmarks.bench_ntt256 import spot_check
 from zkgpu.field import FIELD_MODULUS
@@ -102,10 +101,6 @@ def test_numpy_baseline_caches_survive_repeated_calls():
     for _ in range(3):
         a = rng.integers(0, MOD, size=256, dtype=np.int64)
         assert ntt_numpy(a, MOD).tolist() == ntt(a.tolist(), MOD)
-
-
-def test_pippenger_window_follows_cost_model():
-    assert [pippenger_window(n) for n in (100, 1_000, 10_000)] == [5, 7, 10]
 
 
 def test_plots_render_in_both_themes(quick_results):
